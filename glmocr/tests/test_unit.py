@@ -972,11 +972,6 @@ class TestGlmOcrConstructor:
             parser.close()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Ollama support – OCRClient api_mode="ollama_generate"
-# ═══════════════════════════════════════════════════════════════════════
-
-
 class TestOCRClientOllamaConfig:
     """Tests for OCRClient initialization with Ollama api_mode."""
 
