@@ -19,7 +19,7 @@ Agent-friendly usage::
 """
 
 import re
-from typing import Any, Dict, List, Optional, Union, overload
+from typing import Any, Dict, Generator, List, Literal, Optional, Union, overload
 from pathlib import Path
 
 from glmocr.config import load_config
@@ -71,6 +71,10 @@ class GlmOcr:
         timeout: Optional[int] = None,
         enable_layout: Optional[bool] = None,
         log_level: Optional[str] = None,
+        # Extra knobs for self-hosted mode & GPU binding
+        ocr_api_host: Optional[str] = None,
+        ocr_api_port: Optional[int] = None,
+        cuda_visible_devices: Optional[str] = None,
     ):
         """Initialize GlmOcr.
 
@@ -103,6 +107,9 @@ class GlmOcr:
             timeout=timeout,
             enable_layout=enable_layout,
             log_level=log_level,
+            ocr_api_host=ocr_api_host,
+            ocr_api_port=ocr_api_port,
+            cuda_visible_devices=cuda_visible_devices,
         )
         # Apply logging config for API/SDK usage.
         ensure_logging_configured(
@@ -136,6 +143,8 @@ class GlmOcr:
     def parse(
         self,
         images: str,
+        *,
+        stream: Literal[False] = ...,
         save_layout_visualization: bool = ...,
         **kwargs: Any,
     ) -> PipelineResult:
@@ -145,49 +154,72 @@ class GlmOcr:
     def parse(
         self,
         images: List[str],
+        *,
+        stream: Literal[False] = ...,
         save_layout_visualization: bool = ...,
         **kwargs: Any,
     ) -> List[PipelineResult]:
         ...
 
+    @overload
     def parse(
         self,
         images: Union[str, List[str]],
+        *,
+        stream: Literal[True],
+        save_layout_visualization: bool = ...,
+        **kwargs: Any,
+    ) -> Generator[PipelineResult, None, None]:
+        ...
+
+    def parse(
+        self,
+        images: Union[str, List[str]],
+        *,
+        stream: bool = False,
         save_layout_visualization: bool = True,
         **kwargs: Any,
-    ) -> Union[PipelineResult, List[PipelineResult]]:
+    ) -> Union[
+        PipelineResult, List[PipelineResult], Generator[PipelineResult, None, None]
+    ]:
         """Predict / parse images or documents.
 
         Supports local paths and URLs (file://, http://, https://, data:).
         Supports image files (jpg, png, bmp, gif, webp) and PDF files.
 
-        The return type mirrors the input type:
-        - Pass a **single path** (``str``) → get a single ``PipelineResult``.
-        - Pass a **list of paths** (``List[str]``) → get a ``List[PipelineResult]``.
-
         Args:
             images: Image path/URL — a single ``str`` or a ``list`` of strings.
+            stream: If ``True``, yields one :class:`PipelineResult` at a time (avoids
+                holding all results in memory). If ``False``, returns a single result
+                or a list, depending on *images*.
             save_layout_visualization: Whether to save layout visualization artifacts.
             **kwargs: Additional parameters for MaaS mode (return_crop_images,
                      need_layout_visualization, start_page_id, end_page_id, etc.)
 
         Returns:
-            A single ``PipelineResult`` when *images* is a ``str``, or a list of
-            ``PipelineResult`` when *images* is a ``List[str]``.
+            - When ``stream=False`` (default): a single ``PipelineResult`` if *images*
+              is a ``str``, or a ``List[PipelineResult]`` if *images* is a list.
+            - When ``stream=True``: a generator that yields one ``PipelineResult``
+              per input.
 
         Example:
-            # Single file — returns one PipelineResult directly
+            # Single file — returns one PipelineResult
             result = parser.parse("image.png")
             result.save(output_dir="./output")
 
             # Multiple files — returns a list
             results = parser.parse(["img1.png", "doc.pdf"])
-            for r in results:
+
+            # Stream to avoid large in-memory results
+            for r in parser.parse(["a.pdf", "b.pdf"], stream=True):
                 r.save(output_dir="./output")
         """
         _single = isinstance(images, str)
         if _single:
             images = [images]
+
+        if stream:
+            return self._parse_stream(images, save_layout_visualization, **kwargs)
 
         if self._use_maas:
             result_list = self._parse_maas(images, save_layout_visualization, **kwargs)
@@ -195,6 +227,40 @@ class GlmOcr:
             result_list = self._parse_selfhosted(images, save_layout_visualization)
 
         return result_list[0] if _single else result_list
+
+    def _parse_stream(
+        self,
+        images: List[str],
+        save_layout_visualization: bool = True,
+        **kwargs: Any,
+    ) -> Generator[PipelineResult, None, None]:
+        """Internal: yield one PipelineResult per input. Used by parse(stream=True)."""
+        if self._use_maas:
+            if save_layout_visualization:
+                kwargs.setdefault("need_layout_visualization", True)
+            for image in images:
+                img = image
+                if img.startswith("file://"):
+                    img = img[7:]
+                try:
+                    response = self._maas_client.parse(img, **kwargs)
+                    result = self._maas_response_to_pipeline_result(response, img)
+                    yield result
+                except Exception as e:
+                    logger.error("MaaS API error for %s: %s", img, e)
+                    result = PipelineResult(
+                        json_result=[],
+                        markdown_result="",
+                        original_images=[img],
+                    )
+                    result._error = str(e)
+                    yield result
+            return
+        for result in self._stream_parse_selfhosted(
+            images,
+            save_layout_visualization=save_layout_visualization,
+        ):
+            yield result
 
     def _parse_maas(
         self,
@@ -384,6 +450,40 @@ class GlmOcr:
             )
         )
         return results
+
+    def _stream_parse_selfhosted(
+        self,
+        images: List[str],
+        save_layout_visualization: bool = True,
+    ) -> Generator[PipelineResult, None, None]:
+        """Streaming variant of self-hosted parse().
+
+        Wraps ``Pipeline.process(...)`` and yields results as soon as they
+        become available from the async pipeline.
+        """
+        import tempfile
+
+        messages = [{"role": "user", "content": []}]
+        for image in images:
+            if image.startswith(("http://", "https://", "data:", "file://")):
+                url = image
+            else:
+                url = f"file://{Path(image).absolute()}"
+            messages[0]["content"].append(
+                {"type": "image_url", "image_url": {"url": url}}
+            )
+        request_data = {"messages": messages}
+
+        layout_vis_dir = None
+        if self._pipeline.enable_layout and save_layout_visualization:
+            layout_vis_dir = tempfile.mkdtemp(prefix="layout_vis_")
+
+        for result in self._pipeline.process(
+            request_data,
+            save_layout_visualization=save_layout_visualization,
+            layout_vis_output_dir=layout_vis_dir,
+        ):
+            yield result
 
     def parse_maas(
         self,

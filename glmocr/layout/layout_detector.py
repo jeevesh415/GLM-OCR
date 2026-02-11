@@ -227,11 +227,58 @@ class PPDocLayoutDetector(BaseLayoutDetector):
             else:
                 pre_threshold = self.threshold
 
-            raw_results = self._image_processor.post_process_object_detection(
-                outputs,
-                threshold=pre_threshold,
-                target_sizes=target_sizes,
-            )
+            try:
+                raw_results = self._image_processor.post_process_object_detection(
+                    outputs,
+                    threshold=pre_threshold,
+                    target_sizes=target_sizes,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Layout post_process failed for chunk (retrying image-by-image): %s",
+                    e,
+                )
+                raw_results = []
+                for i in range(len(chunk_pil)):
+                    try:
+                        single_inputs = self._image_processor(
+                            images=[chunk_pil[i]], return_tensors="pt"
+                        )
+                        single_inputs = {
+                            k: v.to(self._device) for k, v in single_inputs.items()
+                        }
+                        with torch.no_grad():
+                            single_outputs = self._model(**single_inputs)
+                        single_target = torch.tensor(
+                            [chunk_pil[i].size[::-1]], device=self._device
+                        )
+                        single_raw = (
+                            self._image_processor.post_process_object_detection(
+                                single_outputs,
+                                threshold=pre_threshold,
+                                target_sizes=single_target,
+                            )
+                        )
+                        raw_results.append(single_raw[0])
+                    except Exception as e2:
+                        logger.warning(
+                            "Layout post_process failed for image %s in chunk: %s",
+                            chunk_start + i,
+                            e2,
+                        )
+                        empty = {
+                            "scores": torch.tensor([], device=self._device),
+                            "labels": torch.tensor(
+                                [], dtype=torch.long, device=self._device
+                            ),
+                            "boxes": torch.tensor([], device=self._device).reshape(
+                                0, 4
+                            ),
+                            "order_seq": torch.tensor(
+                                [], dtype=torch.long, device=self._device
+                            ),
+                        }
+                        raw_results.append(empty)
 
             if self.threshold_by_class:
                 raw_results = self._apply_per_class_threshold(raw_results)
