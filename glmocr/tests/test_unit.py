@@ -50,25 +50,10 @@ class TestPageLoader:
         assert loader.max_tokens == 8192
         assert loader.image_format == "PNG"
 
-    def test_pageloader_load_pdf_requires_pypdfium2(self):
-        """Gives a clear error when pypdfium2 is unavailable."""
-        from glmocr.dataloader import PageLoader
-        from glmocr.config import PageLoaderConfig
-
-        loader = PageLoader(PageLoaderConfig())
-        with patch("glmocr.dataloader.page_loader.PYPDFIUM2_AVAILABLE", False):
-            with pytest.raises(RuntimeError) as exc:
-                loader._load_pdf("dummy.pdf")
-            assert "pypdfium2" in str(exc.value).lower()
-
     def test_pageloader_load_pdf_pages(self):
-        """Expands a PDF into page images (requires pypdfium2)."""
+        """Expands a PDF into page images."""
         from glmocr.config import PageLoaderConfig
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"
@@ -87,11 +72,7 @@ class TestPageLoader:
     def test_pageloader_load_pdf_via_file_uri(self):
         """Parses PDF file:// URIs correctly."""
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
         from glmocr.config import PageLoaderConfig
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"
@@ -111,10 +92,6 @@ class TestPageLoader:
         """Streaming: pages yielded incrementally; unit indices correct for multi-source."""
         from glmocr.config import PageLoaderConfig
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"

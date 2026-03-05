@@ -44,7 +44,7 @@ dependencies = [
   "opencv-python>=4.8.0",
 
   # PDF support
-  "pypdfium2>=5.3.0",
+  "pymupdf>=1.24.0",
 
   # Flask server
   "flask>=2.3.0",
@@ -58,10 +58,6 @@ layout = [
   "sentencepiece>=0.1.99",
   "accelerate>=0.20.0",
   "opencv-python>=4.8.0",
-]
-
-pdf = [
-  "pypdfium2>=5.3.0",
 ]
 
 server = [

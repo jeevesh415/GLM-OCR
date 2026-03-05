@@ -9,7 +9,6 @@ from PIL import Image
 from glmocr.utils.image_utils import (
     crop_image_region,
     pdf_to_images_pil,
-    PYPDFIUM2_AVAILABLE,
 )
 from glmocr.utils.logging import get_logger
 
@@ -81,11 +80,6 @@ def crop_and_replace_images(
         suffix = path.suffix.lower()
 
         if suffix == ".pdf":
-            # PDF: convert to images (pypdfium2 only)
-            if not PYPDFIUM2_AVAILABLE:
-                raise RuntimeError(
-                    "PDF support requires pypdfium2. Install: pip install pypdfium2"
-                )
             try:
                 pdf_images = pdf_to_images_pil(
                     img_path, dpi=200, max_width_or_height=3500

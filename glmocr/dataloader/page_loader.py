@@ -26,7 +26,6 @@ from glmocr.utils.image_utils import (
     load_image_to_base64,
     pdf_to_images_pil,
     pdf_to_images_pil_iter,
-    PYPDFIUM2_AVAILABLE,
 )
 from glmocr.utils.logging import get_logger, get_profiler
 
@@ -86,7 +85,7 @@ class PageLoader:
         # Default OCR instruction (used when user provides images without text)
         self.default_prompt = config.default_prompt
 
-        # PDF-to-image parameters (pypdfium2 only)
+        # PDF-to-image parameters
         self.pdf_dpi = config.pdf_dpi
         self.pdf_max_pages = config.pdf_max_pages
         self.pdf_verbose = config.pdf_verbose
@@ -189,10 +188,6 @@ class PageLoader:
 
     def _iter_pdf(self, file_path: str):
         """Yield PDF pages one at a time (streaming)."""
-        if not PYPDFIUM2_AVAILABLE:
-            raise RuntimeError(
-                "PDF support requires pypdfium2. Install: pip install pypdfium2"
-            )
         end_page = self._compute_end_page()
         for image in pdf_to_images_pil_iter(
             file_path,
@@ -243,11 +238,7 @@ class PageLoader:
             raise RuntimeError(f"Error loading image '{source}': {e}")
 
     def _load_pdf(self, file_path: str) -> List[Image.Image]:
-        """Load all pages from a PDF file using pypdfium2 (required)."""
-        if not PYPDFIUM2_AVAILABLE:
-            raise RuntimeError(
-                "PDF support requires pypdfium2. Install: pip install pypdfium2"
-            )
+        """Load all pages from a PDF file."""
         t0 = time.perf_counter()
         end_page = self._compute_end_page()
         pages = pdf_to_images_pil(

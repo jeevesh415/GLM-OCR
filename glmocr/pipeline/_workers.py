@@ -228,18 +228,37 @@ def _flush_layout_batch(
     global_start_idx: int,
 ) -> None:
     """Run layout detection on one batch and enqueue the resulting regions."""
-    layout_results = layout_detector.process(
-        batch_images,
-        save_visualization=save_visualization and vis_output_dir is not None,
-        visualization_output_dir=vis_output_dir,
-        global_start_idx=global_start_idx,
-    )
+    try:
+        layout_results = layout_detector.process(
+            batch_images,
+            save_visualization=save_visualization and vis_output_dir is not None,
+            visualization_output_dir=vis_output_dir,
+            global_start_idx=global_start_idx,
+        )
+    except Exception as e:
+        logger.warning(
+            "Layout detection failed for pages %s, skipping batch: %s",
+            batch_page_indices, e,
+        )
+        for page_idx in batch_page_indices:
+            state.layout_results_dict[page_idx] = []
+        return
+
     for page_idx, image, layout_result in zip(
         batch_page_indices, batch_images, layout_results
     ):
         state.layout_results_dict[page_idx] = layout_result
         for region in layout_result:
-            cropped = crop_image_region(image, region["bbox_2d"], region["polygon"])
+            try:
+                cropped = crop_image_region(image, region["bbox_2d"], region["polygon"])
+            except Exception as e:
+                logger.warning(
+                    "Failed to crop region on page %d (bbox=%s), skipping: %s",
+                    page_idx, region.get("bbox_2d"), e,
+                )
+                region["content"] = ""
+                state.add_recognition_result(page_idx, region)
+                continue
             if not state.safe_put(state.region_queue, {
                 "identifier": IDENTIFIER_REGION,
                 "page_idx": page_idx,
@@ -346,11 +365,12 @@ def _handle_future_result(
     try:
         response, status_code = future.result()
         if status_code == 200:
-            region["content"] = response["choices"][0]["message"]["content"].strip()
+            content = response["choices"][0]["message"]["content"]
+            region["content"] = content.strip() if content else ""
         else:
             region["content"] = ""
     except Exception as e:
-        logger.warning("Recognition failed: %s", e)
+        logger.warning("Recognition failed for page %d: %s", page_idx, e)
         region["content"] = ""
     state.add_recognition_result(page_idx, region)
 
