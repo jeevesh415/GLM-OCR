@@ -27,6 +27,7 @@ class PipelineResult(BaseParserResult):
         layout_vis_dir: Optional[str] = None,
         layout_image_indices: Optional[List[int]] = None,
         image_files: Optional[dict] = None,
+        raw_json_result: Optional[list] = None,
     ):
         """Initialize.
 
@@ -39,12 +40,14 @@ class PipelineResult(BaseParserResult):
                 None means all files in layout_vis_dir belong to this unit.
             image_files: Mapping of ``filename`` → PIL Image for image-type
                 regions; saved directly to ``imgs/`` during :meth:`save`.
+            raw_json_result: Raw model output before post-processing (optional).
         """
         super().__init__(
             json_result=json_result,
             markdown_result=markdown_result,
             original_images=original_images,
             image_files=image_files,
+            raw_json_result=raw_json_result,
         )
         self.layout_vis_dir = layout_vis_dir
         self.layout_image_indices = layout_image_indices

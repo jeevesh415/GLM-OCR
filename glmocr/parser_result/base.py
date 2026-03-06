@@ -28,6 +28,7 @@ class BaseParserResult(ABC):
         markdown_result: Optional[str] = None,
         original_images: Optional[List[str]] = None,
         image_files: Optional[Dict[str, Any]] = None,
+        raw_json_result: Optional[list] = None,
     ):
         """Initialize.
 
@@ -37,6 +38,8 @@ class BaseParserResult(ABC):
             original_images: Original image paths.
             image_files: Mapping of ``filename`` → PIL Image for image-type
                 regions, to be saved under ``imgs/`` during :meth:`save`.
+            raw_json_result: Raw model output before post-processing;
+                saved as ``{name}_model.json`` alongside the final result.
         """
         if isinstance(json_result, str):
             try:
@@ -51,6 +54,7 @@ class BaseParserResult(ABC):
             str(Path(p).absolute()) for p in (original_images or [])
         ]
         self.image_files = image_files
+        self.raw_json_result = raw_json_result
 
     @abstractmethod
     def save(
@@ -90,6 +94,15 @@ class BaseParserResult(ABC):
         except Exception as e:
             logger.warning("Failed to save JSON: %s", e)
             traceback.print_exc()
+
+        # Raw model output (before post-processing)
+        if self.raw_json_result is not None:
+            raw_file = output_path / f"{base_name}_model.json"
+            try:
+                with open(raw_file, "w", encoding="utf-8") as f:
+                    json.dump(self.raw_json_result, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning("Failed to save raw JSON: %s", e)
 
         # Markdown
         if self.markdown_result and self.markdown_result.strip():

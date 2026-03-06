@@ -208,6 +208,30 @@ class Pipeline:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_raw_json(grouped_results: List[List[Dict]]) -> list:
+        """Build a raw JSON snapshot from grouped recognition results.
+
+        Same structure as the final JSON (list of pages, each a list of region
+        dicts) but with the original model output before any post-processing.
+        """
+        raw = []
+        for page_results in grouped_results:
+            sorted_results = sorted(
+                page_results, key=lambda x: x.get("index", 0)
+            )
+            raw.append([
+                {
+                    "index": i,
+                    "label": r.get("label", "text"),
+                    "content": r.get("content", ""),
+                    "bbox_2d": r.get("bbox_2d"),
+                    "polygon": r.get("polygon"),
+                }
+                for i, r in enumerate(sorted_results)
+            ])
+        return raw
+
     def _process_passthrough(
         self,
         request_data: Dict[str, Any],
@@ -269,6 +293,7 @@ class Pipeline:
                 continue
 
             cropped_images = state.collect_cropped_images_for_unit(page_indices)
+            raw_json = self._build_raw_json(grouped)
             json_u, md_u, image_files = self.result_formatter.process(
                 grouped, cropped_images=cropped_images or None,
             )
@@ -279,5 +304,6 @@ class Pipeline:
                 layout_vis_dir=layout_vis_output_dir,
                 layout_image_indices=page_indices,
                 image_files=image_files or None,
+                raw_json_result=raw_json,
             )
             emitted.add(u)
