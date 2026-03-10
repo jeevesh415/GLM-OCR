@@ -51,6 +51,9 @@ class PipelineState:
         self._image_region_store: Dict[int, Dict[tuple, Any]] = {}
         self._image_store_lock = threading.Lock()
 
+        # ── Layout visualization images (page_idx → PIL Image) ────────
+        self.layout_vis_images: Dict[int, Any] = {}
+
         # ── UnitTracker (set before threads start) ───────────────────
         self._tracker: Optional[UnitTracker] = None
 

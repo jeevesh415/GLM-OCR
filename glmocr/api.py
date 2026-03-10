@@ -506,16 +506,10 @@ class GlmOcr:
     ) -> List[PipelineResult]:
         """Parse using self-hosted vLLM/SGLang pipeline."""
         request_data = self._build_selfhosted_request(images)
-
-        layout_vis_dir = None
-        if save_layout_visualization:
-            layout_vis_dir = tempfile.mkdtemp(prefix="layout_vis_")
-
         results = list(
             self._pipeline.process(
                 request_data,
                 save_layout_visualization=save_layout_visualization,
-                layout_vis_output_dir=layout_vis_dir,
             )
         )
         return results
@@ -527,15 +521,9 @@ class GlmOcr:
     ) -> Generator[PipelineResult, None, None]:
         """Streaming variant of self-hosted parse()."""
         request_data = self._build_selfhosted_request(images)
-
-        layout_vis_dir = None
-        if save_layout_visualization:
-            layout_vis_dir = tempfile.mkdtemp(prefix="layout_vis_")
-
         for result in self._pipeline.process(
             request_data,
             save_layout_visualization=save_layout_visualization,
-            layout_vis_output_dir=layout_vis_dir,
         ):
             yield result
 

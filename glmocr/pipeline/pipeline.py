@@ -99,7 +99,6 @@ class Pipeline:
         self,
         request_data: Dict[str, Any],
         save_layout_visualization: bool = False,
-        layout_vis_output_dir: Optional[str] = None,
         page_maxsize: Optional[int] = None,
         region_maxsize: Optional[int] = None,
     ) -> Generator[PipelineResult, None, None]:
@@ -110,8 +109,7 @@ class Pipeline:
 
         Args:
             request_data: OpenAI-style request payload containing messages.
-            save_layout_visualization: Save layout visualisation images.
-            layout_vis_output_dir: Directory for visualisation output.
+            save_layout_visualization: Generate layout visualisation images.
             page_maxsize: Bound for the page queue.
             region_maxsize: Bound for the region queue.
 
@@ -121,7 +119,7 @@ class Pipeline:
         image_urls = extract_image_urls(request_data)
 
         if not image_urls:
-            yield self._process_passthrough(request_data, layout_vis_output_dir)
+            yield self._process_passthrough(request_data)
             return
 
         num_units = len(image_urls)
@@ -143,7 +141,7 @@ class Pipeline:
         )
         t2 = threading.Thread(
             target=layout_worker,
-            args=(state, self.layout_detector, save_layout_visualization, layout_vis_output_dir, self.config.layout.use_polygon),
+            args=(state, self.layout_detector, save_layout_visualization, self.config.layout.use_polygon),
             daemon=True,
         )
         t3 = threading.Thread(
@@ -157,7 +155,7 @@ class Pipeline:
         t3.start()
 
         try:
-            yield from self._emit_results(state, tracker, original_inputs, layout_vis_output_dir)
+            yield from self._emit_results(state, tracker, original_inputs)
         finally:
             state.request_shutdown()
             t1.join(timeout=10)
@@ -235,7 +233,6 @@ class Pipeline:
     def _process_passthrough(
         self,
         request_data: Dict[str, Any],
-        layout_vis_output_dir: Optional[str],
     ) -> PipelineResult:
         """No image URLs — forward the request directly to the OCR API."""
         request_data = self.page_loader.build_request(request_data)
@@ -250,7 +247,6 @@ class Pipeline:
             json_result=json_result,
             markdown_result=markdown_result,
             original_images=[],
-            layout_vis_dir=layout_vis_output_dir,
         )
 
     def _emit_results(
@@ -258,7 +254,6 @@ class Pipeline:
         state: PipelineState,
         tracker: UnitTracker,
         original_inputs: List[str],
-        layout_vis_output_dir: Optional[str],
     ) -> Generator[PipelineResult, None, None]:
         """Wait for units to complete and yield their formatted results.
 
@@ -297,13 +292,20 @@ class Pipeline:
             json_u, md_u, image_files = self.result_formatter.process(
                 grouped, cropped_images=cropped_images or None,
             )
+
+            # Collect layout visualization images for this unit
+            vis_images = {}
+            for pi in page_indices:
+                img = state.layout_vis_images.pop(pi, None)
+                if img is not None:
+                    vis_images[pi] = img
+
             yield PipelineResult(
                 json_result=json_u,
                 markdown_result=md_u,
                 original_images=[original_inputs[u]],
-                layout_vis_dir=layout_vis_output_dir,
-                layout_image_indices=page_indices,
                 image_files=image_files or None,
                 raw_json_result=raw_json,
+                layout_vis_images=vis_images or None,
             )
             emitted.add(u)

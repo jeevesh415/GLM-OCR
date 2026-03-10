@@ -131,7 +131,6 @@ def layout_worker(
     state: PipelineState,
     layout_detector: "BaseLayoutDetector",
     save_visualization: bool,
-    vis_output_dir: Optional[str],
     use_polygon: bool = False,
 ) -> None:
     """Consume pages, run layout detection in batches, push regions.
@@ -173,7 +172,7 @@ def layout_worker(
                 if len(batch_images) >= layout_detector.batch_size:
                     _flush_layout_batch(
                         state, layout_detector, batch_images, batch_page_indices,
-                        save_visualization, vis_output_dir, global_start_idx,
+                        save_visualization, global_start_idx,
                         use_polygon=use_polygon,
                     )
                     global_start_idx += len(batch_page_indices)
@@ -186,7 +185,7 @@ def layout_worker(
                 if batch_images:
                     _flush_layout_batch(
                         state, layout_detector, batch_images, batch_page_indices,
-                        save_visualization, vis_output_dir, global_start_idx,
+                        save_visualization, global_start_idx,
                         use_polygon=use_polygon,
                     )
                     global_start_idx += len(batch_page_indices)
@@ -209,7 +208,7 @@ def layout_worker(
                 if batch_images:
                     _flush_layout_batch(
                         state, layout_detector, batch_images, batch_page_indices,
-                        save_visualization, vis_output_dir, global_start_idx,
+                        save_visualization, global_start_idx,
                         use_polygon=use_polygon,
                     )
                 state.safe_put(state.region_queue, {"identifier": IDENTIFIER_DONE})
@@ -228,19 +227,19 @@ def _flush_layout_batch(
     batch_images: List[Any],
     batch_page_indices: List[int],
     save_visualization: bool,
-    vis_output_dir: Optional[str],
     global_start_idx: int,
     use_polygon: bool = False,
 ) -> None:
     """Run layout detection on one batch and enqueue the resulting regions."""
     try:
-        layout_results = layout_detector.process(
+        layout_results, vis_images = layout_detector.process(
             batch_images,
-            save_visualization=save_visualization and vis_output_dir is not None,
-            visualization_output_dir=vis_output_dir,
+            save_visualization=save_visualization,
             global_start_idx=global_start_idx,
             use_polygon=use_polygon,
         )
+        if vis_images:
+            state.layout_vis_images.update(vis_images)
     except Exception as e:
         logger.warning(
             "Layout detection failed for pages %s, skipping batch: %s",

@@ -18,7 +18,7 @@ from transformers import (
 from glmocr.layout.base import BaseLayoutDetector
 from glmocr.utils.layout_postprocess_utils import apply_layout_postprocess
 from glmocr.utils.logging import get_logger
-from glmocr.utils.visualization_utils import save_layout_visualization
+from glmocr.utils.visualization_utils import draw_layout_boxes
 
 if TYPE_CHECKING:
     from glmocr.config import LayoutConfig
@@ -264,20 +264,22 @@ class PPDocLayoutDetector(BaseLayoutDetector):
         self,
         images: List[Image.Image],
         save_visualization: bool = False,
-        visualization_output_dir: Optional[str] = None,
         global_start_idx: int = 0,
         use_polygon: bool = False,
-    ) -> List[List[Dict]]:
+    ) -> tuple:
         """Batch-detect layout regions in-process.
 
         Args:
             images: List of PIL Images.
-            save_visualization: Whether to also save visualization.
-            visualization_output_dir: Where to save visualization outputs.
-            global_start_idx: Start index for visualization filenames (layout_page{N}).
+            save_visualization: Whether to generate visualization images.
+            global_start_idx: Start index for visualization page numbering.
+            use_polygon: Use polygon masks for visualization and cropping.
 
         Returns:
-            List[List[Dict]]: Detection results per image.
+            Tuple of (results, vis_images) where *results* is
+            ``List[List[Dict]]`` and *vis_images* is
+            ``Dict[int, PIL.Image.Image]`` mapping global page index to
+            the rendered layout visualization (empty dict when disabled).
         """
         if self._model is None:
             raise RuntimeError("Layout detector not started. Call start() first.")
@@ -332,24 +334,15 @@ class PPDocLayoutDetector(BaseLayoutDetector):
                 del inputs, outputs, raw_results
                 torch.cuda.empty_cache()
 
-        saved_vis_paths = []
-        if save_visualization and visualization_output_dir:
-            vis_output_path = Path(visualization_output_dir)
-            vis_output_path.mkdir(parents=True, exist_ok=True)
+        vis_images: Dict[int, Image.Image] = {}
+        if save_visualization:
             for img_idx, img_results in enumerate(all_paddle_format_results):
                 vis_img = np.array(pil_images[img_idx])
-                save_filename = f"layout_page{global_start_idx + img_idx}.jpg"
-                save_path = vis_output_path / save_filename
-                save_layout_visualization(
+                vis_images[global_start_idx + img_idx] = draw_layout_boxes(
                     image=vis_img,
                     boxes=img_results,
-                    save_path=str(save_path),
-                    show_label=True,
-                    show_score=True,
-                    show_index=True,
                     use_polygon=use_polygon,
                 )
-                saved_vis_paths.append(str(save_path))
 
         all_results = []
         for img_idx, paddle_results in enumerate(all_paddle_format_results):
@@ -396,4 +389,4 @@ class PPDocLayoutDetector(BaseLayoutDetector):
                 valid_index += 1
             all_results.append(results)
 
-        return all_results
+        return all_results, vis_images
