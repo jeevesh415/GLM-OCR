@@ -117,7 +117,7 @@ Examples:
     parser.add_argument(
         "--no-save",
         action="store_true",
-        help="Do not write any result files (useful for benchmarking / stress tests)",
+        help="Do not write any result files",
     )
 
     return parser.parse_args()

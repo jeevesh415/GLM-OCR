@@ -75,8 +75,8 @@ def start_engine(
     model: str,
     gpu_id: int,
     port: int,
+    log_dir: str,
     extra_args: str = "",
-    log_dir: str = "/tmp",
     engine_log_level: str = "warning",
 ) -> Tuple[subprocess.Popen, Path, Any]:
     """Start an engine service on a specific GPU.
@@ -87,6 +87,7 @@ def start_engine(
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     if engine == "vllm":
         env["VLLM_LOGGING_LEVEL"] = engine_log_level.upper()
+        env["UVICORN_LOG_LEVEL"] = engine_log_level.lower()
 
     cmd = build_engine_cmd(engine, model, port, extra_args)
     log_path = Path(log_dir) / f"engine_gpu{gpu_id}_port{port}.log"

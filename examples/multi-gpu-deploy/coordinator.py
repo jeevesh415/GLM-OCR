@@ -261,8 +261,8 @@ class Coordinator:
                 model=self.args.model,
                 gpu_id=gpu_id,
                 port=port,
-                extra_args=self.args.engine_args or "",
                 log_dir=str(self.log_dir),
+                extra_args=self.args.engine_args or "",
             )
             self.engine_procs[gpu_id] = proc
             self.file_handles.append(log_fh)
