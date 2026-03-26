@@ -28,7 +28,7 @@ class PipelineState:
     def __init__(
         self,
         page_maxsize: int = 100,
-        region_maxsize: int = 800,
+        region_maxsize: int = 2000,
     ):
         # ── Inter-thread queues ──────────────────────────────────────
         self.page_queue: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=page_maxsize)

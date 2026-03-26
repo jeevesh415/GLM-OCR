@@ -25,6 +25,190 @@ class TestConfig:
         assert isinstance(cfg, dict)
 
 
+class TestLayoutDeviceUnit:
+    """Unit tests for layout device selection and config plumbing (mocked)."""
+
+    @staticmethod
+    def _require_layout_runtime():
+        """Require optional self-hosted layout deps, otherwise skip tests."""
+        torch = pytest.importorskip(
+            "torch", reason="layout device unit tests require optional selfhosted deps"
+        )
+        pytest.importorskip(
+            "transformers",
+            reason="layout device unit tests require optional selfhosted deps",
+        )
+        return torch
+
+    def test_layout_config_device_default_is_none(self):
+        """LayoutConfig.device defaults to None (auto-select)."""
+        from glmocr.config import LayoutConfig
+
+        cfg = LayoutConfig()
+        assert cfg.device is None
+
+    def test_layout_config_device_cpu(self):
+        """LayoutConfig accepts 'cpu' as device."""
+        from glmocr.config import LayoutConfig
+
+        cfg = LayoutConfig(device="cpu")
+        assert cfg.device == "cpu"
+
+    def test_layout_config_device_cuda(self):
+        """LayoutConfig accepts 'cuda' as device."""
+        from glmocr.config import LayoutConfig
+
+        cfg = LayoutConfig(device="cuda")
+        assert cfg.device == "cuda"
+
+    def test_layout_config_device_cuda_index(self):
+        """LayoutConfig accepts 'cuda:1' as device."""
+        from glmocr.config import LayoutConfig
+
+        cfg = LayoutConfig(device="cuda:1")
+        assert cfg.device == "cuda:1"
+
+    def test_env_var_sets_device(self, monkeypatch):
+        """GLMOCR_LAYOUT_DEVICE env var propagates to config."""
+        from glmocr.config import GlmOcrConfig, _ENV_MAP, ENV_PREFIX
+
+        # Clear other GLMOCR_ vars to avoid interference
+        for suffix in _ENV_MAP:
+            monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+        monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
+
+        monkeypatch.setenv("GLMOCR_LAYOUT_DEVICE", "cpu")
+        cfg = GlmOcrConfig.from_env()
+        assert cfg.pipeline.layout.device == "cpu"
+
+    def test_from_env_layout_device_kwarg(self, monkeypatch):
+        """layout_device kwarg in from_env() sets device correctly."""
+        from glmocr.config import GlmOcrConfig, _ENV_MAP, ENV_PREFIX
+
+        for suffix in _ENV_MAP:
+            monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+        monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
+
+        cfg = GlmOcrConfig.from_env(layout_device="cuda:1")
+        assert cfg.pipeline.layout.device == "cuda:1"
+
+    # Minimal config kwargs for mocked detector tests
+    _MOCK_LAYOUT_KWARGS = dict(
+        model_dir="dummy",
+        id2label={0: "text"},
+        label_task_mapping={"text": ["text"]},
+    )
+
+    def _mock_detector(self, device_val):
+        """Create a PPDocLayoutDetector with mocked model, ready for start()."""
+        self._require_layout_runtime()
+        from glmocr.config import LayoutConfig
+        from glmocr.layout.layout_detector import PPDocLayoutDetector
+
+        cfg = LayoutConfig(device=device_val, **self._MOCK_LAYOUT_KWARGS)
+        det = PPDocLayoutDetector(cfg)
+
+        mock_model = MagicMock()
+        mock_model.to = MagicMock(return_value=mock_model)
+        mock_model.eval = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.id2label = {0: "text"}
+        mock_processor = MagicMock()
+        return det, mock_model, mock_processor
+
+    def test_detector_device_selection_explicit_cpu(self):
+        """When config.device='cpu', detector picks CPU even if CUDA is available."""
+        det, mock_model, mock_proc = self._mock_detector("cpu")
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                return_value=mock_proc,
+            ),
+        ):
+            det.start()
+
+        assert det._device == "cpu"
+        mock_model.to.assert_called_with("cpu")
+
+    def test_detector_device_selection_explicit_cuda(self):
+        """When config.device='cuda:1', detector picks that device."""
+        det, mock_model, mock_proc = self._mock_detector("cuda:1")
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                return_value=mock_proc,
+            ),
+        ):
+            det.start()
+
+        assert det._device == "cuda:1"
+        mock_model.to.assert_called_with("cuda:1")
+
+    def test_detector_device_selection_auto_fallback_cpu(self):
+        """When config.device=None and CUDA unavailable, auto-selects CPU."""
+        torch = self._require_layout_runtime()
+
+        det, mock_model, mock_proc = self._mock_detector(None)
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                return_value=mock_proc,
+            ),
+            patch.object(torch.cuda, "is_available", return_value=False),
+        ):
+            det.start()
+
+        assert det._device == "cpu"
+
+    def test_detector_device_selection_auto_cuda(self):
+        """When config.device=None and CUDA available, auto-selects cuda:{cuda_visible_devices}."""
+        torch = self._require_layout_runtime()
+        from glmocr.config import LayoutConfig
+        from glmocr.layout.layout_detector import PPDocLayoutDetector
+
+        cfg = LayoutConfig(
+            device=None, cuda_visible_devices="1", **self._MOCK_LAYOUT_KWARGS
+        )
+        det = PPDocLayoutDetector(cfg)
+
+        mock_model = MagicMock()
+        mock_model.to = MagicMock(return_value=mock_model)
+        mock_model.eval = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.id2label = {0: "text"}
+        mock_proc = MagicMock()
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                return_value=mock_proc,
+            ),
+            patch.object(torch.cuda, "is_available", return_value=True),
+        ):
+            det.start()
+
+        assert det._device == "cuda:1"
+
+
 class TestPageLoader:
     """Tests for PageLoader."""
 
@@ -202,6 +386,32 @@ class TestUtils:
 
         assert callable(crop_image_region)
 
+    def test_image_utils_crop_image_region_polygon_without_opencv(self):
+        """Polygon crop works without requiring OpenCV."""
+        from PIL import Image
+
+        from glmocr.utils.image_utils import crop_image_region
+
+        image = Image.new("RGB", (100, 100), (255, 255, 255))
+        cropped = crop_image_region(
+            image,
+            [100, 100, 900, 900],
+            polygon=[[100, 100], [900, 100], [900, 900], [100, 900]],
+        )
+
+        assert cropped.size == (80, 80)
+
+    def test_server_create_app_requires_flask_extra(self, monkeypatch):
+        """Server import error explains the optional extra."""
+        from glmocr.config import load_config
+        from glmocr import server
+
+        monkeypatch.setattr(server, "Flask", None)
+        monkeypatch.setattr(server, "_FLASK_IMPORT_ERROR", ImportError("missing flask"))
+
+        with pytest.raises(ImportError, match=r"glmocr\[server\]"):
+            server.create_app(load_config())
+
     def test_load_image_to_base64_accepts_raw_base64(self):
         """load_image_to_base64 accepts raw base64 payloads (OCRClient path)."""
         import base64
@@ -293,20 +503,19 @@ class TestMaaSClient:
         from glmocr.config import MaaSApiConfig
 
         config = MaaSApiConfig()
-        assert config.enabled is False
+        assert config.enabled is True
         assert config.api_url == "https://open.bigmodel.cn/api/paas/v4/layout_parsing"
         assert config.model == "glm-ocr"
         assert config.verify_ssl is True
 
     def test_maas_client_requires_api_key(self):
-        """MaaSClient raises error when API key is missing."""
-        from glmocr.maas_client import MaaSClient
+        """MaaSClient raises MissingApiKeyError when API key is missing."""
+        from glmocr.maas_client import MaaSClient, MissingApiKeyError
         from glmocr.config import MaaSApiConfig
 
         config = MaaSApiConfig(api_key=None)
-        with pytest.raises(ValueError) as exc:
+        with pytest.raises(MissingApiKeyError):
             MaaSClient(config)
-        assert "API key is required" in str(exc.value)
 
     def test_maas_client_init_with_api_key(self):
         """MaaSClient initializes correctly with API key."""
@@ -458,7 +667,7 @@ class TestMaaSClient:
 
         config = PipelineConfig()
         assert hasattr(config, "maas")
-        assert config.maas.enabled is False
+        assert config.maas.enabled is True
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -585,7 +794,7 @@ class TestCollectEnvOverrides:
     def test_picks_up_env_var(self, monkeypatch):
         from glmocr.config import _collect_env_overrides
 
-        monkeypatch.setenv("GLMOCR_API_KEY", "sk-env")
+        monkeypatch.setenv("ZHIPU_API_KEY", "sk-env")
         overrides = _collect_env_overrides()
         # Should produce nested dict: pipeline.maas.api_key = "sk-env"
         assert overrides["pipeline"]["maas"]["api_key"] == "sk-env"
@@ -602,10 +811,11 @@ class TestCollectEnvOverrides:
         from glmocr.config import _collect_env_overrides
 
         dotenv = tmp_path / ".env"
-        dotenv.write_text("GLMOCR_API_KEY=sk-from-dotenv\n")
+        dotenv.write_text("ZHIPU_API_KEY=sk-from-dotenv\n")
         # Patch _find_dotenv to return our temp .env
         monkeypatch.setattr("glmocr.config._find_dotenv", lambda: dotenv)
         # Make sure real env doesn't have the key
+        monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
         monkeypatch.delenv("GLMOCR_API_KEY", raising=False)
 
         overrides = _collect_env_overrides()
@@ -616,9 +826,9 @@ class TestCollectEnvOverrides:
         from glmocr.config import _collect_env_overrides
 
         dotenv = tmp_path / ".env"
-        dotenv.write_text("GLMOCR_API_KEY=sk-dotenv\n")
+        dotenv.write_text("ZHIPU_API_KEY=sk-dotenv\n")
         monkeypatch.setattr("glmocr.config._find_dotenv", lambda: dotenv)
-        monkeypatch.setenv("GLMOCR_API_KEY", "sk-real")
+        monkeypatch.setenv("ZHIPU_API_KEY", "sk-real")
 
         overrides = _collect_env_overrides()
         assert overrides["pipeline"]["maas"]["api_key"] == "sk-real"
@@ -630,6 +840,7 @@ class TestCollectEnvOverrides:
         # Clear all GLMOCR_* vars
         for suffix in _ENV_MAP:
             monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+        monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
         monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
 
         assert _collect_env_overrides() == {}
@@ -647,14 +858,14 @@ class TestFromEnv:
         monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
 
         cfg = GlmOcrConfig.from_env()
-        assert cfg.pipeline.maas.enabled is False
+        assert cfg.pipeline.maas.enabled is True
         assert cfg.logging.level == "INFO"
 
     def test_overrides_win_over_env(self, monkeypatch):
         """Keyword overrides beat env vars."""
         from glmocr.config import GlmOcrConfig
 
-        monkeypatch.setenv("GLMOCR_API_KEY", "sk-env")
+        monkeypatch.setenv("ZHIPU_API_KEY", "sk-env")
         cfg = GlmOcrConfig.from_env(api_key="sk-override")
         assert cfg.pipeline.maas.api_key == "sk-override"
 
@@ -664,7 +875,7 @@ class TestFromEnv:
 
         yaml_file = tmp_path / "test.yaml"
         yaml_file.write_text("pipeline:\n  maas:\n    api_key: sk-yaml\n")
-        monkeypatch.setenv("GLMOCR_API_KEY", "sk-env")
+        monkeypatch.setenv("ZHIPU_API_KEY", "sk-env")
         monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
 
         cfg = GlmOcrConfig.from_env(config_path=str(yaml_file))
@@ -1076,6 +1287,24 @@ class TestGlmOcrConstructor:
 
             parser = GlmOcr(mode="selfhosted")
             assert parser._use_maas is False
+            parser.close()
+
+    def test_selfhosted_model_kwarg_is_forwarded_to_ocr_api(self, monkeypatch):
+        """model=... should configure self-hosted OCR request model."""
+        from glmocr.config import _ENV_MAP, ENV_PREFIX
+
+        for suffix in _ENV_MAP:
+            monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+        monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
+
+        with patch("glmocr.pipeline.Pipeline") as mock_pipeline:
+            mock_pipeline.return_value.start = MagicMock()
+            mock_pipeline.return_value.enable_layout = False
+            from glmocr.api import GlmOcr
+
+            parser = GlmOcr(mode="selfhosted", model="glm-ocr")
+            assert parser._use_maas is False
+            assert parser.config_model.pipeline.ocr_api.model == "glm-ocr"
             parser.close()
 
 

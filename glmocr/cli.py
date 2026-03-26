@@ -5,6 +5,7 @@ Provides a command-line interface to run document parsing.
 
 import sys
 import json
+import re
 import argparse
 import threading
 import traceback
@@ -14,9 +15,27 @@ from typing import List, Optional, Tuple
 from tqdm import tqdm
 
 from glmocr.api import GlmOcr
+from glmocr.maas_client import MissingApiKeyError
 from glmocr.utils.logging import get_logger, configure_logging
 
 logger = get_logger(__name__)
+
+
+def layout_device_type(value: str) -> str:
+    """Validate --layout-device argument.
+
+    Accepts:
+      - "cpu"
+      - "cuda"
+      - "cuda:N" where N is a non-negative integer.
+    """
+    if value in ("cpu", "cuda"):
+        return value
+    if re.fullmatch(r"cuda:\d+", value):
+        return value
+    raise argparse.ArgumentTypeError(
+        'Invalid layout device {!r}. Expected "cpu", "cuda", or "cuda:N".'.format(value)
+    )
 
 
 _SUPPORTED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".pdf"}
@@ -98,16 +117,28 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
     Examples:
-    # Parse a single image file
+    # Parse a single image (uses ZHIPU_API_KEY from environment)
   glmocr parse image.png
+
+    # Pass API key directly (no env setup needed)
+  glmocr parse image.png --api-key sk-xxx
 
     # Parse all images in a directory
   glmocr parse ./images/
 
+    # Disable layout detection (OCR-only): set pipeline.enable_layout=false
+    glmocr parse image.png --config my_config.yaml
+
     # Specify output directory
   glmocr parse image.png --output ./output/
 
-    # Specify config file
+    # Print results to stdout only (no files written)
+  glmocr parse image.png --api-key sk-xxx --stdout --no-save
+
+    # Load API key from a specific .env file
+  glmocr parse image.png --env-file /path/to/.env
+
+    # Specify custom config file
   glmocr parse image.png --config config.yaml
 
     # Override config values via --set
@@ -157,11 +188,37 @@ def main():
         help="Output results to standard output (JSON format)",
     )
     parse_parser.add_argument(
+        "--api-key",
+        "-k",
+        type=str,
+        default=None,
+        help="API key for MaaS mode (overrides ZHIPU_API_KEY env var)",
+    )
+    parse_parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=["maas", "selfhosted"],
+        help="Operation mode: 'maas' (cloud API, default) or 'selfhosted' (local vLLM/SGLang)",
+    )
+    parse_parser.add_argument(
+        "--env-file",
+        type=str,
+        default=None,
+        help="Path to .env file to load ZHIPU_API_KEY and other settings from",
+    )
+    parse_parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO)",
+    )
+    parse_parser.add_argument(
+        "--layout-device",
+        type=layout_device_type,
+        default=None,
+        help='Device for layout model: "cpu", "cuda", or "cuda:N" (default: auto)',
     )
     parse_parser.add_argument(
         "--set",
@@ -170,7 +227,7 @@ def main():
         metavar=("KEY", "VALUE"),
         dest="config_overrides",
         help="Override a config value using dotted path, e.g. "
-        "--set pipeline.ocr_api.api_port 8080",
+             "--set pipeline.ocr_api.api_port 8080",
     )
 
     args = parser.parse_args()
@@ -188,12 +245,18 @@ def main():
 
         save_layout_vis = not args.no_layout_vis
 
-        # Build dotted-path overrides from --set KEY VALUE pairs
         dotted_overrides: dict = {}
-        for key, value in args.config_overrides or []:
+        for key, value in (args.config_overrides or []):
             dotted_overrides[key] = _auto_coerce(value)
 
-        with GlmOcr(config_path=args.config, _dotted=dotted_overrides) as glm_parser:
+        with GlmOcr(
+            config_path=args.config,
+            api_key=args.api_key,
+            mode=args.mode,
+            env_file=args.env_file,
+            layout_device=args.layout_device,
+            _dotted=dotted_overrides,
+        ) as glm_parser:
             total_files = len(image_paths)
 
             pbar = tqdm(
@@ -272,6 +335,17 @@ def main():
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+        sys.exit(1)
+    except MissingApiKeyError as e:
+        logger.error(
+            "%s\n\n"
+            "  Quick fix:\n"
+            "    export ZHIPU_API_KEY=sk-xxx           # set once in shell\n"
+            "    glmocr parse image.png --api-key sk-xxx  # or pass directly\n\n"
+            "  Get your free key at: https://open.bigmodel.cn",
+            e,
+        )
+        logger.debug(traceback.format_exc())
         sys.exit(1)
     except Exception as e:
         logger.error("Error: %s", e)

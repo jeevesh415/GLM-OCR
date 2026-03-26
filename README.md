@@ -1,17 +1,17 @@
 ## GLM-OCR
 
+[中文阅读](README_zh.md)
+
 <div align="center">
 <img src=resources/logo.svg width="40%"/>
 </div>
 <p align="center">
     👋 Join our <a href="resources/WECHAT.md" target="_blank">WeChat</a> and <a href="https://discord.gg/QR7SARHRxK" target="_blank">Discord</a> community
     <br>
+    📖 Check out the GLM-OCR <a href="https://arxiv.org/abs/2603.10910" target="_blank">technical report</a>
+    <br>
     📍 Use GLM-OCR's <a href="https://docs.z.ai/guides/vlm/glm-ocr" target="_blank">API</a>
 </p>
-
-<div align="center">
-  <a href="README_zh.md">简体中文</a> | English
-</div>
 
 ### Model Introduction
 
@@ -29,7 +29,8 @@ GLM-OCR is a multimodal OCR model for complex document understanding, built on t
 
 ### News & Updates
 
-- **[Coming Soon]** GLM-OCR Technical Report
+- **[2026.3.12]** GLM-OCR SDK now supports agent-friendly Skill mode — just `pip install glmocr` + set API key, ready to use via CLI or Python with no GPU or YAML config needed. See: [GLM-OCR Skill](skills/glmocr/SKILL.md)
+- **[2026.3.12]** GLM-OCR Technical Report is now available. See: [GLM-OCR Technical Report](https://arxiv.org/abs/2603.10910)
 - **[2026.2.12]** Fine-tuning tutorial based on LLaMA-Factory is now available. See: [GLM-OCR Fine-tuning Guide](examples/finetune/README.md)
 
 ### Download Model
@@ -44,7 +45,20 @@ We provide an SDK for using GLM-OCR more efficiently and conveniently.
 
 ### Install SDK
 
-> [UV Installation](https://docs.astral.sh/uv/getting-started/installation/)
+Choose the lightest installation that matches your scenario:
+
+```bash
+# Cloud / MaaS + local images / PDFs (fastest install)
+pip install glmocr
+
+# Self-hosted pipeline (layout detection)
+pip install "glmocr[selfhosted]"
+
+# Flask service support
+pip install "glmocr[server]"
+```
+
+Install from source for development:
 
 ```bash
 # Install from source
@@ -88,23 +102,31 @@ API documentation: https://docs.bigmodel.cn/cn/guide/models/vlm/glm-ocr
 
 Deploy the GLM-OCR model locally for full control. The SDK provides the complete pipeline: layout detection, parallel region OCR, and result formatting.
 
+Install the self-hosted extra first:
+
+```bash
+pip install "glmocr[selfhosted]"
+```
+
 ##### Using vLLM
 
 Install vLLM:
 
 ```bash
-uv pip install -U vllm --torch-backend=auto --extra-index-url https://wheels.vllm.ai/nightly
-# Or use Docker
 docker pull vllm/vllm-openai:nightly
+```
+
+Or using with pip:
+
+```bash
+pip install -U "vllm>=0.17.0"
 ```
 
 Launch the service:
 
 ```bash
-# In docker container, uv may not be need for transformers install
-uv pip install git+https://github.com/huggingface/transformers.git
+pip install "transformers>=5.3.0"
 
-# Run with MTP for better performance
 vllm serve zai-org/GLM-OCR --allowed-local-media-path / --port 8080 --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}' --served-model-name glm-ocr
 ```
 
@@ -114,19 +136,20 @@ Install SGLang:
 
 ```bash
 docker pull lmsysorg/sglang:dev
-# Or build from source
-uv pip install git+https://github.com/sgl-project/sglang.git#subdirectory=python
+```
+
+Or using with pip:
+
+```bash
+pip install "sglang>=0.5.9"
 ```
 
 Launch the service:
 
 ```bash
-# In docker container, uv may not be need for transformers install
-uv pip install git+https://github.com/huggingface/transformers.git
+pip install "transformers>=5.3.0"
 
-# Run with MTP for better performance
-python -m sglang.launch_server --model zai-org/GLM-OCR --port 8080 --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --served-model-name glm-ocr
-# Modify the speculative config base on your device
+sglang serve --model zai-org/GLM-OCR --port 8080 --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --served-model-name glm-ocr
 ```
 
 ##### Update Configuration
@@ -169,6 +192,12 @@ glmocr parse examples/source/code.png --config my_config.yaml
 # Enable debug logging with profiling
 glmocr parse examples/source/code.png --log-level DEBUG
 
+# Run layout detection on CPU (keep GPU free for OCR model)
+glmocr parse examples/source/code.png --layout-device cpu
+
+# Run layout detection on a specific GPU
+glmocr parse examples/source/code.png --layout-device cuda:1
+
 # Override any config value via --set (dotted path, repeatable)
 glmocr parse examples/source/code.png --set pipeline.ocr_api.api_port 8080
 glmocr parse examples/source/ --set pipeline.layout.use_polygon true --set logging.level DEBUG
@@ -192,9 +221,23 @@ with GlmOcr() as parser:
     result = parser.parse("image.png")
     print(result.json_result)
     result.save()
+
+# Place layout model on CPU (useful when GPU is reserved for OCR)
+with GlmOcr(layout_device="cpu") as parser:
+    result = parser.parse("image.png")
+
+# Place layout model on a specific GPU
+with GlmOcr(layout_device="cuda:1") as parser:
+    result = parser.parse("image.png")
 ```
 
 #### Flask Service
+
+Install the optional server dependency first:
+
+```bash
+pip install "glmocr[server]"
+```
 
 ```bash
 # Start service
@@ -259,6 +302,10 @@ pipeline:
   # Result formatting
   result_formatter:
     output_format: both # json, markdown, or both
+
+  # Layout model device placement
+  layout:
+    # device: null   # null=auto, "cpu", "cuda", or "cuda:N"
 ```
 
 See [config.yaml](glmocr/config.yaml) for all options.
@@ -329,6 +376,16 @@ class MyPipeline:
     pass
 ```
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=zai-org%2FGLM-OCR&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## Acknowledgement
 
 This project is inspired by the excellent work of the following projects and communities:
@@ -346,4 +403,17 @@ The GLM-OCR model is released under the MIT License.
 The complete OCR pipeline integrates [PP-DocLayoutV3](https://huggingface.co/PaddlePaddle/PP-DocLayoutV3) for document layout analysis, which is licensed under the Apache License 2.0. Users should comply with both licenses when using this project.
 
 ## Citation
-GLM-OCR technical report is coming soon.
+
+If you find GLM-OCR useful in your research, please cite our technical report:
+
+```bibtex
+@misc{duan2026glmocrtechnicalreport,
+      title={GLM-OCR Technical Report},
+      author={Shuaiqi Duan and Yadong Xue and Weihan Wang and Zhe Su and Huan Liu and Sheng Yang and Guobing Gan and Guo Wang and Zihan Wang and Shengdong Yan and Dexin Jin and Yuxuan Zhang and Guohong Wen and Yanfeng Wang and Yutao Zhang and Xiaohan Zhang and Wenyi Hong and Yukuo Cen and Da Yin and Bin Chen and Wenmeng Yu and Xiaotao Gu and Jie Tang},
+      year={2026},
+      eprint={2603.10910},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2603.10910},
+}
+```

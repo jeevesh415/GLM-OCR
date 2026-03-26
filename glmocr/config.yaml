@@ -32,7 +32,7 @@ pipeline:
   #
   # Note: When maas.enabled=true, the ocr_api and layout settings below are ignored.
   maas:
-    enabled: false # Set to true to use MaaS mode
+    enabled: true # Set to true to use MaaS mode
     api_url: https://open.bigmodel.cn/api/paas/v4/layout_parsing
     model: glm-ocr
     api_key: null # Required! Get from https://open.bigmodel.cn
@@ -83,7 +83,7 @@ pipeline:
     api_mode: openai
 
     # Authentication (for MaaS providers like Zhipu, OpenAI, etc.)
-    api_key: null # or set GLMOCR_API_KEY env var
+    api_key: null # or set ZHIPU_API_KEY env var
     headers: {} # additional HTTP headers
 
     # SSL/TLS
@@ -191,7 +191,15 @@ pipeline:
     # batch_size: max images per model forward pass (reduce to 1 if OOM)
     batch_size: 1
     workers: 1
-    cuda_visible_devices: "5"
+    cuda_visible_devices: "0"
+    # Explicit device placement for the layout model.
+    # - null (default): auto-select (CUDA if available via cuda_visible_devices,
+    #   otherwise CPU).
+    # - "cpu": force CPU even when a GPU is available. Useful for single-GPU
+    #   setups where the GPU is reserved for the OCR model.
+    # - "cuda" or "cuda:N": use a specific GPU (overrides cuda_visible_devices).
+    # Can also be set via GLMOCR_LAYOUT_DEVICE env var or --layout-device CLI flag.
+    # device: null
     # img_size: null                # resize input (optional)
 
     # Use polygon masks for region cropping and visualization.

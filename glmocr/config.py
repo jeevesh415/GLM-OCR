@@ -1,4 +1,4 @@
-"""Configuration models and loaders.  """
+"""Configuration models and loaders."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Union, List
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Environment variable prefix for all GLM-OCR settings.
 ENV_PREFIX = "GLMOCR_"
@@ -46,9 +46,14 @@ _ENV_MAP: Dict[str, str] = {
     "OCR_MODEL": "pipeline.ocr_api.model",
     # Allow overriding which GPU(s) the layout model uses
     "LAYOUT_CUDA_VISIBLE_DEVICES": "pipeline.layout.cuda_visible_devices",
+    # Explicit device for layout model: "cpu", "cuda", "cuda:0", etc.
+    "LAYOUT_DEVICE": "pipeline.layout.device",
     # Logging
     "LOG_LEVEL": "logging.level",
 }
+
+PRIMARY_API_KEY_ENV = "ZHIPU_API_KEY"
+LEGACY_API_KEY_ENV = "GLMOCR_API_KEY"
 
 
 class _BaseConfig(BaseModel):
@@ -110,7 +115,8 @@ class MaaSApiConfig(_BaseConfig):
     """
 
     # Enable MaaS mode (passthrough to Zhipu cloud API)
-    enabled: bool = False
+    # Default: True — MaaS is the default mode after `pip install glmocr` (no GPU needed)
+    enabled: bool = True
 
     # API endpoint (default: Zhipu GLM-OCR layout_parsing API)
     api_url: str = "https://open.bigmodel.cn/api/paas/v4/layout_parsing"
@@ -179,12 +185,46 @@ class LayoutConfig(_BaseConfig):
     batch_size: int = 8
     workers: int = 1
     cuda_visible_devices: str = "0"
+    # Explicit device placement for the layout model.
+    # - null (default): auto-select using cuda_visible_devices if CUDA is
+    #   available, otherwise CPU.  This preserves backward compatibility.
+    # - "cpu": force CPU even when CUDA is available.
+    # - "cuda": use the default CUDA device.
+    # - "cuda:N": use a specific CUDA device (overrides cuda_visible_devices).
+    device: Optional[str] = None
     img_size: Optional[int] = None
     layout_nms: bool = True
     layout_unclip_ratio: Optional[Any] = None
     layout_merge_bboxes_mode: Union[str, Dict[int, str]] = "large"
     label_task_mapping: Optional[Dict[str, Any]] = None
     use_polygon: bool = False
+
+    @field_validator("device")
+    @classmethod
+    def _validate_device(cls, value: Optional[str]) -> Optional[str]:
+        """Validate the layout device string.
+
+        Allowed values:
+        - None / null (auto-select based on CUDA availability)
+        - "cpu"
+        - "cuda"
+        - "cuda:<int>" (e.g., "cuda:0", "cuda:1")
+        """
+        if value is None:
+            return value
+        v = value.strip()
+        if v == "":
+            return None
+        if v == "cpu" or v == "cuda":
+            return v
+        if v.startswith("cuda:"):
+            index_part = v[5:]
+            if index_part.isdigit():
+                return v
+        raise ValueError(
+            "Invalid layout device value. Expected one of: None, 'cpu', 'cuda', "
+            "or 'cuda:<int>' (e.g., 'cuda:0')."
+        )
 
 
 class PipelineConfig(_BaseConfig):
@@ -203,7 +243,7 @@ class PipelineConfig(_BaseConfig):
 
     # Queue sizes for async pipeline.
     page_maxsize: int = 100
-    region_maxsize: Optional[int] = None
+    region_maxsize: Optional[int] = 800
 
 
 def _set_nested(data: Dict[str, Any], dotted_path: str, value: Any) -> None:
@@ -226,14 +266,30 @@ def _coerce_env_value(dotted_path: str, raw: str) -> Any:
     return raw
 
 
-def _collect_env_overrides() -> Dict[str, Any]:
-    """Read GLMOCR_* values from ``.env`` file + real environment variables.
+def _collect_env_overrides(
+    env_file: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    """Read SDK env values from ``.env`` + real environment variables.
+
+    Args:
+        env_file: Explicit path to a ``.env`` file.  When provided, this file
+            is used instead of the auto-discovered one.  Raises
+            ``FileNotFoundError`` if the path does not exist.
 
     Priority: real ``os.environ`` > ``.env`` file.  This means a user can
     always override a ``.env`` value by exporting the variable in the shell.
+
+    API key special case:
+    - Primary: ``ZHIPU_API_KEY``
+    - Legacy fallback: ``GLMOCR_API_KEY``
     """
     # 1. Load .env file (does NOT mutate os.environ)
-    dotenv_path = _find_dotenv()
+    if env_file is not None:
+        dotenv_path = Path(env_file)
+        if not dotenv_path.is_file():
+            raise FileNotFoundError(f".env file not found: {dotenv_path}")
+    else:
+        dotenv_path = _find_dotenv()
     dotenv_vars: Dict[str, Optional[str]] = (
         dotenv_values(dotenv_path) if dotenv_path else {}
     )
@@ -241,6 +297,19 @@ def _collect_env_overrides() -> Dict[str, Any]:
     # 2. Merge: real env > .env
     merged: Dict[str, str] = {}
     for env_suffix in _ENV_MAP:
+        if env_suffix == "API_KEY":
+            # Prefer unified env key for SDK skill, fallback to legacy key.
+            val = os.environ.get(PRIMARY_API_KEY_ENV)
+            if val is None:
+                val = os.environ.get(LEGACY_API_KEY_ENV)
+            if val is None:
+                val = dotenv_vars.get(PRIMARY_API_KEY_ENV)  # type: ignore[assignment]
+            if val is None:
+                val = dotenv_vars.get(LEGACY_API_KEY_ENV)  # type: ignore[assignment]
+            if val is not None:
+                merged[env_suffix] = val
+            continue
+
         full_key = f"{ENV_PREFIX}{env_suffix}"
         # Real env takes precedence
         val = os.environ.get(full_key)
@@ -303,8 +372,9 @@ class GlmOcrConfig(_BaseConfig):
 
         This is the **agent-friendly** entry-point.  An agent (or any
         programmatic caller) can configure the SDK entirely through keyword
-        arguments or ``GLMOCR_*`` environment variables without touching a
-        YAML file.
+        arguments or environment variables without touching a YAML file.
+        Primary API key env var is ``ZHIPU_API_KEY`` (``GLMOCR_API_KEY`` is
+        still supported as a legacy fallback).
 
         Accepted keyword overrides (a useful subset – the full YAML structure
         is also accepted via nested dicts):
@@ -315,6 +385,7 @@ class GlmOcrConfig(_BaseConfig):
         * ``mode``           – ``"maas"`` or ``"selfhosted"``
         * ``timeout``        – request timeout in seconds
         * ``log_level``      – logging level (DEBUG / INFO / …)
+        * ``env_file``       – explicit path to a ``.env`` file
 
         Any other keyword is silently ignored so that callers can safely
         forward ``**kwargs`` without worrying about typos crashing the SDK.
@@ -322,7 +393,7 @@ class GlmOcrConfig(_BaseConfig):
         Examples::
 
             # Pure env-var driven (e.g. in a .env file)
-            #   GLMOCR_API_KEY=xxx
+            #   ZHIPU_API_KEY=xxx
             #   GLMOCR_MODE=maas
             cfg = GlmOcrConfig.from_env()
 
@@ -346,7 +417,8 @@ class GlmOcrConfig(_BaseConfig):
             data = {}
 
         # 2. Environment variable overrides (.env + GLMOCR_*)
-        env_data = _collect_env_overrides()
+        env_file = overrides.pop("env_file", None)
+        env_data = _collect_env_overrides(env_file=env_file)
         if env_data:
             _deep_merge(data, env_data)
 
@@ -354,7 +426,6 @@ class GlmOcrConfig(_BaseConfig):
         _KW_MAP = {
             "api_key": "pipeline.maas.api_key",
             "api_url": "pipeline.maas.api_url",
-            "model": "pipeline.maas.model",
             "mode": "pipeline.maas.enabled",
             "timeout": "pipeline.maas.request_timeout",
             "log_level": "logging.level",
@@ -363,7 +434,17 @@ class GlmOcrConfig(_BaseConfig):
             "ocr_api_port": "pipeline.ocr_api.api_port",
             # Layout GPU binding
             "cuda_visible_devices": "pipeline.layout.cuda_visible_devices",
+            "layout_device": "pipeline.layout.device",
         }
+
+        # `model` is shared by both MaaS and self-hosted modes.
+        # Keep MaaS behavior while also forwarding it to OCR API so that
+        # `GlmOcr(mode="selfhosted", model="...")` works as expected.
+        if "model" in overrides and overrides["model"] is not None:
+            model_value = str(overrides["model"])
+            _set_nested(data, "pipeline.maas.model", model_value)
+            _set_nested(data, "pipeline.ocr_api.model", model_value)
+
         for kw, dotted in _KW_MAP.items():
             if kw in overrides and overrides[kw] is not None:
                 raw = overrides[kw]

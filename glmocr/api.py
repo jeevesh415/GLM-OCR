@@ -13,6 +13,7 @@ Supported input types: file paths (``str``), ``pathlib.Path``, raw ``bytes``
 
 Agent-friendly usage::
 
+    # Only needs ZHIPU_API_KEY in environment (or pass api_key directly)
     from glmocr import GlmOcr
 
     parser = GlmOcr(api_key="sk-xxx", mode="maas")
@@ -21,6 +22,7 @@ Agent-friendly usage::
     print(result.to_dict())
 """
 
+import os
 import re
 from typing import Any, Dict, Generator, List, Literal, Optional, Union, overload
 from pathlib import Path
@@ -49,7 +51,7 @@ class GlmOcr:
         # --- Agent-friendly: zero YAML ---
         import glmocr
         parser = glmocr.GlmOcr(api_key="sk-xxx")          # MaaS auto-enabled
-        parser = glmocr.GlmOcr(mode="maas")                # uses GLMOCR_API_KEY env
+        parser = glmocr.GlmOcr(mode="maas")                # uses ZHIPU_API_KEY env
 
         # --- Classic: YAML-based ---
         parser = glmocr.GlmOcr(config_path="config.yaml")
@@ -76,16 +78,19 @@ class GlmOcr:
         mode: Optional[str] = None,
         timeout: Optional[int] = None,
         log_level: Optional[str] = None,
+        env_file: Optional[str] = None,
         # Extra knobs for self-hosted mode & GPU binding
         ocr_api_host: Optional[str] = None,
         ocr_api_port: Optional[int] = None,
         cuda_visible_devices: Optional[str] = None,
+        layout_device: Optional[str] = None,
         **kwargs: Any,
     ):
         """Initialize GlmOcr.
 
         All keyword arguments are optional.  When provided they override any
-        value coming from the YAML file or ``GLMOCR_*`` environment variables.
+        value coming from the YAML file or environment variables
+        (primary API key: ``ZHIPU_API_KEY``).
 
         Args:
             config_path: YAML config file path (optional).
@@ -97,9 +102,18 @@ class GlmOcr:
                       mode defaults to ``"maas"``.
             timeout:  Request timeout in seconds.
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
+            env_file: Path to a ``.env`` file to load API key and other settings from.
+            layout_device: Device for the layout model: ``"cpu"``, ``"cuda"``,
+                or ``"cuda:N"``.  Defaults to auto-detection via
+                ``cuda_visible_devices``.
         """
-        # If user provides api_key but no explicit mode, default to MaaS.
-        if api_key is not None and mode is None:
+        # If an API key is available (constructor arg or env var), default to MaaS.
+        # This ensures `GlmOcr()` with ZHIPU_API_KEY in env auto-selects MaaS
+        # even when the user has an old YAML with maas.enabled=false.
+        _has_api_key = api_key is not None or bool(
+            os.environ.get("ZHIPU_API_KEY") or os.environ.get("GLMOCR_API_KEY")
+        )
+        if _has_api_key and mode is None:
             mode = "maas"
 
         # Build config: overrides > env vars > YAML > defaults
@@ -111,9 +125,11 @@ class GlmOcr:
             mode=mode,
             timeout=timeout,
             log_level=log_level,
+            env_file=env_file,
             ocr_api_host=ocr_api_host,
             ocr_api_port=ocr_api_port,
             cuda_visible_devices=cuda_visible_devices,
+            layout_device=layout_device,
             **kwargs,
         )
         # Apply logging config for API/SDK usage.
@@ -181,8 +197,7 @@ class GlmOcr:
         stream: Literal[False] = ...,
         save_layout_visualization: bool = ...,
         **kwargs: Any,
-    ) -> PipelineResult:
-        ...
+    ) -> PipelineResult: ...
 
     @overload
     def parse(
@@ -192,8 +207,7 @@ class GlmOcr:
         stream: Literal[False] = ...,
         save_layout_visualization: bool = ...,
         **kwargs: Any,
-    ) -> List[PipelineResult]:
-        ...
+    ) -> List[PipelineResult]: ...
 
     @overload
     def parse(
@@ -203,8 +217,7 @@ class GlmOcr:
         stream: Literal[True],
         save_layout_visualization: bool = ...,
         **kwargs: Any,
-    ) -> Generator[PipelineResult, None, None]:
-        ...
+    ) -> Generator[PipelineResult, None, None]: ...
 
     def parse(
         self,
@@ -592,8 +605,7 @@ def parse(
     images: Union[str, bytes, Path],
     config_path: Optional[str] = ...,
     save_layout_visualization: bool = ...,
-) -> PipelineResult:
-    ...
+) -> PipelineResult: ...
 
 
 @overload
@@ -601,8 +613,7 @@ def parse(
     images: List[Union[str, bytes, Path]],
     config_path: Optional[str] = ...,
     save_layout_visualization: bool = ...,
-) -> List[PipelineResult]:
-    ...
+) -> List[PipelineResult]: ...
 
 
 @overload
@@ -613,8 +624,7 @@ def parse(
     *,
     stream: Literal[True],
     **kwargs: Any,
-) -> Generator[PipelineResult, None, None]:
-    ...
+) -> Generator[PipelineResult, None, None]: ...
 
 
 def parse(
@@ -630,6 +640,7 @@ def parse(
     mode: Optional[str] = None,
     timeout: Optional[int] = None,
     log_level: Optional[str] = None,
+    env_file: Optional[str] = None,
     **kwargs: Any,
 ) -> Union[PipelineResult, List[PipelineResult], Generator[PipelineResult, None, None]]:
     """Convenience function: parse images or documents in one call.
@@ -640,9 +651,14 @@ def parse(
 
         import glmocr
 
-        result = glmocr.parse("image.png")
-        result = glmocr.parse(open("doc.pdf", "rb").read())
-        results = glmocr.parse(["img.png", pdf_bytes])
+        # Minimal – only needs ZHIPU_API_KEY env var
+        results = glmocr.parse("image.png")
+
+        # Explicit API key
+        results = glmocr.parse("image.png", api_key="sk-xxx")
+
+        # Self-hosted mode
+        results = glmocr.parse("image.png", mode="selfhosted")
 
         for r in glmocr.parse(["a.pdf", "b.pdf"], stream=True):
             r.save(output_dir="./output")
@@ -669,6 +685,7 @@ def parse(
         mode=mode,
         timeout=timeout,
         log_level=log_level,
+        env_file=env_file,
     ) as parser:
         return parser.parse(
             images,

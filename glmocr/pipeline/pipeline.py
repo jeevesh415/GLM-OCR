@@ -98,7 +98,7 @@ class Pipeline:
 
         self.max_workers = config.max_workers
         self._page_maxsize = getattr(config, "page_maxsize", 100)
-        self._region_maxsize = getattr(config, "region_maxsize", 800)
+        self._region_maxsize = getattr(config, "region_maxsize", 2000)
         self._current_state: Optional[PipelineState] = None
 
     # ------------------------------------------------------------------

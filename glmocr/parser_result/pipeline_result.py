@@ -60,18 +60,24 @@ class PipelineResult(BaseParserResult):
             return
 
         if self.original_images:
-            stem = Path(self.original_images[0]).stem
+            stem = self._sanitize_name(Path(self.original_images[0]).stem)
             target_dir = Path(output_dir).absolute() / stem / "layout_vis"
         else:
             target_dir = Path(output_dir).absolute() / "result" / "layout_vis"
 
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        vis_items = sorted(self.layout_vis_images.items())
-        stem = Path(self.original_images[0]).stem if self.original_images else "result"
-        for local_idx, (_page_idx, vis_img) in enumerate(vis_items):
+        stem_name = (
+            self._sanitize_name(Path(self.original_images[0]).stem)
+            if self.original_images
+            else "result"
+        )
+        single = len(self.layout_vis_images) == 1
+        for page_idx, vis_img in self.layout_vis_images.items():
             name = (
-                f"{stem}.jpg" if len(vis_items) == 1 else f"{stem}_page{local_idx}.jpg"
+                f"{stem_name}.jpg"
+                if single
+                else f"{stem_name}_page{page_idx}.jpg"
             )
             try:
                 vis_img.save(target_dir / name, quality=95)
