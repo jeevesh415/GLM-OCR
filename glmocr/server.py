@@ -2,7 +2,9 @@
 
 import os
 import sys
+import time
 import traceback
+import uuid
 import multiprocessing
 from typing import TYPE_CHECKING
 
@@ -27,6 +29,23 @@ logger = get_logger(__name__)
 
 os.environ["http_proxy"] = ""
 os.environ["https_proxy"] = ""
+
+
+def _build_response(json_result, markdown_result):
+    """Build response dict with both SDK native and MaaS-compatible fields."""
+    return {
+        # SDK native fields
+        "json_result": json_result,
+        "markdown_result": markdown_result,
+        # MaaS-compatible fields
+        "layout_details": json_result,
+        "md_results": markdown_result,
+        "data_info": {"pages": []},
+        "usage": {},
+        "model": "glm-ocr",
+        "id": f"chatcmpl-{uuid.uuid4().hex[:29]}",
+        "created": int(time.time()),
+    }
 
 
 def create_app(config: "GlmOcrConfig") -> Flask:
@@ -114,19 +133,11 @@ def create_app(config: "GlmOcrConfig") -> Flask:
                 )
             )
             if not results:
-                return (
-                    jsonify({"json_result": None, "markdown_result": ""}),
-                    200,
-                )
+                return jsonify(_build_response(None, "")), 200
             if len(results) == 1:
                 r = results[0]
                 return (
-                    jsonify(
-                        {
-                            "json_result": r.json_result,
-                            "markdown_result": r.markdown_result or "",
-                        }
-                    ),
+                    jsonify(_build_response(r.json_result, r.markdown_result or "")),
                     200,
                 )
             # Multiple units: merge json as list, markdown with separator
@@ -134,15 +145,7 @@ def create_app(config: "GlmOcrConfig") -> Flask:
             markdown_result = "\n\n---\n\n".join(
                 r.markdown_result or "" for r in results
             )
-            return (
-                jsonify(
-                    {
-                        "json_result": json_result,
-                        "markdown_result": markdown_result,
-                    }
-                ),
-                200,
-            )
+            return jsonify(_build_response(json_result, markdown_result)), 200
 
         except Exception as e:
             logger.error("Parse error: %s", e)
