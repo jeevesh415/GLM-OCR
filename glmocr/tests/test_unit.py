@@ -24,6 +24,20 @@ class TestConfig:
         cfg = load_config().to_dict()
         assert isinstance(cfg, dict)
 
+    def test_selfhosted_layout_defaults_are_publicly_configured(self):
+        """Self-hosted config loads packaged layout defaults."""
+        from glmocr.config import load_config
+
+        cfg = load_config(mode="selfhosted")
+        layout = cfg.pipeline.layout
+
+        assert cfg.pipeline.maas.enabled is False
+        assert layout.model_dir == "PaddlePaddle/PP-DocLayoutV3_safetensors"
+        assert isinstance(layout.label_task_mapping, dict)
+        assert layout.label_task_mapping
+        assert isinstance(layout.id2label, dict)
+        assert layout.id2label
+
 
 class TestLayoutDeviceUnit:
     """Unit tests for layout device selection and config plumbing (mocked)."""
@@ -36,6 +50,10 @@ class TestLayoutDeviceUnit:
         )
         pytest.importorskip(
             "transformers",
+            reason="layout device unit tests require optional selfhosted deps",
+        )
+        pytest.importorskip(
+            "cv2",
             reason="layout device unit tests require optional selfhosted deps",
         )
         return torch
@@ -94,18 +112,19 @@ class TestLayoutDeviceUnit:
 
     # Minimal config kwargs for mocked detector tests
     _MOCK_LAYOUT_KWARGS = dict(
-        model_dir="dummy",
         id2label={0: "text"},
         label_task_mapping={"text": ["text"]},
     )
 
-    def _mock_detector(self, device_val):
+    def _mock_detector(self, device_val, *, model_dir="dummy"):
         """Create a PPDocLayoutDetector with mocked model, ready for start()."""
         self._require_layout_runtime()
         from glmocr.config import LayoutConfig
         from glmocr.layout.layout_detector import PPDocLayoutDetector
 
-        cfg = LayoutConfig(device=device_val, **self._MOCK_LAYOUT_KWARGS)
+        cfg = LayoutConfig(
+            device=device_val, model_dir=model_dir, **self._MOCK_LAYOUT_KWARGS
+        )
         det = PPDocLayoutDetector(cfg)
 
         mock_model = MagicMock()
@@ -126,7 +145,7 @@ class TestLayoutDeviceUnit:
                 return_value=mock_model,
             ),
             patch(
-                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
                 return_value=mock_proc,
             ),
         ):
@@ -145,7 +164,7 @@ class TestLayoutDeviceUnit:
                 return_value=mock_model,
             ),
             patch(
-                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
                 return_value=mock_proc,
             ),
         ):
@@ -166,7 +185,7 @@ class TestLayoutDeviceUnit:
                 return_value=mock_model,
             ),
             patch(
-                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
                 return_value=mock_proc,
             ),
             patch.object(torch.cuda, "is_available", return_value=False),
@@ -182,7 +201,10 @@ class TestLayoutDeviceUnit:
         from glmocr.layout.layout_detector import PPDocLayoutDetector
 
         cfg = LayoutConfig(
-            device=None, cuda_visible_devices="1", **self._MOCK_LAYOUT_KWARGS
+            device=None,
+            cuda_visible_devices="1",
+            model_dir="dummy",
+            **self._MOCK_LAYOUT_KWARGS,
         )
         det = PPDocLayoutDetector(cfg)
 
@@ -199,7 +221,7 @@ class TestLayoutDeviceUnit:
                 return_value=mock_model,
             ),
             patch(
-                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessorFast.from_pretrained",
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
                 return_value=mock_proc,
             ),
             patch.object(torch.cuda, "is_available", return_value=True),
@@ -207,6 +229,97 @@ class TestLayoutDeviceUnit:
             det.start()
 
         assert det._device == "cuda:1"
+
+    def test_detector_start_uses_public_config_defaults(self):
+        """Detector can start from load_config() defaults without extra fields."""
+        self._require_layout_runtime()
+        from glmocr.config import load_config
+        from glmocr.layout.layout_detector import PPDocLayoutDetector
+
+        cfg = load_config(mode="selfhosted").pipeline.layout
+        cfg.model_dir = "dummy"
+        det = PPDocLayoutDetector(cfg)
+
+        mock_model = MagicMock()
+        mock_model.to = MagicMock(return_value=mock_model)
+        mock_model.eval = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.id2label = dict(cfg.id2label)
+        mock_proc = MagicMock()
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
+                return_value=mock_proc,
+            ),
+        ):
+            det.start()
+
+        assert det.id2label == cfg.id2label
+
+    def test_detector_defaults_label_task_mapping_from_model_id2label(self):
+        """Missing label_task_mapping falls back to a text bucket from id2label."""
+        self._require_layout_runtime()
+        from glmocr.config import LayoutConfig
+        from glmocr.layout.layout_detector import PPDocLayoutDetector
+
+        cfg = LayoutConfig(model_dir="dummy", device="cpu")
+        det = PPDocLayoutDetector(cfg)
+
+        mock_model = MagicMock()
+        mock_model.to = MagicMock(return_value=mock_model)
+        mock_model.eval = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.id2label = {0: "text", 1: "title"}
+        mock_proc = MagicMock()
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
+                return_value=mock_proc,
+            ),
+        ):
+            det.start()
+
+        assert det.id2label == {0: "text", 1: "title"}
+        assert det.label_task_mapping == {"text": ["text", "title"]}
+
+    def test_detector_raises_when_id2label_missing_everywhere(self):
+        """Missing id2label in both config and model config raises a clear error."""
+        self._require_layout_runtime()
+        from glmocr.config import LayoutConfig
+        from glmocr.layout.layout_detector import PPDocLayoutDetector
+
+        cfg = LayoutConfig(model_dir="dummy", device="cpu")
+        det = PPDocLayoutDetector(cfg)
+
+        mock_model = MagicMock()
+        mock_model.to = MagicMock(return_value=mock_model)
+        mock_model.eval = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.id2label = None
+        mock_proc = MagicMock()
+
+        with (
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ForObjectDetection.from_pretrained",
+                return_value=mock_model,
+            ),
+            patch(
+                "glmocr.layout.layout_detector.PPDocLayoutV3ImageProcessor.from_pretrained",
+                return_value=mock_proc,
+            ),
+            pytest.raises(RuntimeError, match="Missing id2label"),
+        ):
+            det.start()
 
 
 class TestPageLoader:
@@ -234,25 +347,10 @@ class TestPageLoader:
         assert loader.max_tokens == 8192
         assert loader.image_format == "PNG"
 
-    def test_pageloader_load_pdf_requires_pypdfium2(self):
-        """Gives a clear error when pypdfium2 is unavailable."""
-        from glmocr.dataloader import PageLoader
-        from glmocr.config import PageLoaderConfig
-
-        loader = PageLoader(PageLoaderConfig())
-        with patch("glmocr.dataloader.page_loader.PYPDFIUM2_AVAILABLE", False):
-            with pytest.raises(RuntimeError) as exc:
-                loader._load_pdf("dummy.pdf")
-            assert "pypdfium2" in str(exc.value).lower()
-
     def test_pageloader_load_pdf_pages(self):
-        """Expands a PDF into page images (requires pypdfium2)."""
+        """Expands a PDF into page images."""
         from glmocr.config import PageLoaderConfig
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"
@@ -271,11 +369,7 @@ class TestPageLoader:
     def test_pageloader_load_pdf_via_file_uri(self):
         """Parses PDF file:// URIs correctly."""
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
         from glmocr.config import PageLoaderConfig
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"
@@ -295,10 +389,6 @@ class TestPageLoader:
         """Streaming: pages yielded incrementally; unit indices correct for multi-source."""
         from glmocr.config import PageLoaderConfig
         from glmocr.dataloader import PageLoader
-        from glmocr.utils.image_utils import PYPDFIUM2_AVAILABLE
-
-        if not PYPDFIUM2_AVAILABLE:
-            pytest.skip("pypdfium2 is not installed")
 
         repo_root = Path(__file__).resolve().parents[2]
         source_dir = repo_root / "examples" / "source"
@@ -398,31 +488,6 @@ class TestParseResult:
             original_images=["a.png", "b.png"],
         )
         assert "images=2" in repr(result)
-
-
-class TestPipeline:
-    """Tests for Pipeline (without starting)."""
-
-    def test_pipeline_init_enable_layout_default(self):
-        """Default enable_layout behavior (mocked)."""
-        from glmocr.pipeline import Pipeline
-
-        # Use a mock to avoid heavy dependencies
-        with patch.object(Pipeline, "__init__", lambda self, config: None):
-            p = Pipeline.__new__(Pipeline)
-            p.config = {}
-            p.enable_layout = p.config.get("enable_layout", True)
-            assert p.enable_layout is True
-
-    def test_pipeline_init_enable_layout_false(self):
-        """enable_layout can be disabled (mocked)."""
-        with patch("glmocr.pipeline.Pipeline.__init__", return_value=None):
-            from glmocr.pipeline import Pipeline
-
-            p = Pipeline.__new__(Pipeline)
-            p.config = {"enable_layout": False}
-            p.enable_layout = p.config.get("enable_layout", True)
-            assert p.enable_layout is False
 
 
 class TestUtils:
@@ -746,18 +811,6 @@ class TestCoerceEnvValue:
 
         assert _coerce_env_value("pipeline.maas.enabled", "MaaS") is True
         assert _coerce_env_value("pipeline.maas.enabled", "TRUE") is True
-
-    def test_enable_layout_true(self):
-        from glmocr.config import _coerce_env_value
-
-        assert _coerce_env_value("pipeline.enable_layout", "1") is True
-        assert _coerce_env_value("pipeline.enable_layout", "yes") is True
-
-    def test_enable_layout_false(self):
-        from glmocr.config import _coerce_env_value
-
-        assert _coerce_env_value("pipeline.enable_layout", "0") is False
-        assert _coerce_env_value("pipeline.enable_layout", "no") is False
 
     def test_integer_coercion(self):
         from glmocr.config import _coerce_env_value
@@ -1166,7 +1219,6 @@ class TestParseReturnType:
         obj._pipeline = None
         obj._maas_client = MagicMock()
         obj.config_model = MagicMock()
-        obj.enable_layout = True
 
         # Mock _parse_maas to return a list of one result
         obj._parse_maas = MagicMock(return_value=[mock_result])
@@ -1212,7 +1264,6 @@ class TestGlmOcrParseStream:
         obj._pipeline = None
         obj._maas_client = MagicMock()
         obj.config_model = MagicMock()
-        obj.enable_layout = True
         obj._maas_response_to_pipeline_result = MagicMock(
             return_value=PipelineResult(
                 json_result=[[{"content": "ok"}]],
@@ -1232,7 +1283,6 @@ class TestGlmOcrParseStream:
         obj._maas_client = None
         obj._pipeline = MagicMock()
         obj.config_model = MagicMock()
-        obj.enable_layout = True
         r1 = PipelineResult(
             json_result=[], markdown_result="a", original_images=["a.png"]
         )
@@ -1311,6 +1361,7 @@ class TestGlmOcrParseStream:
         parser._stream_parse_selfhosted.assert_called_once_with(
             ["a.png", "b.png"],
             save_layout_visualization=False,
+            preserve_order=True,
         )
 
 
@@ -1346,11 +1397,28 @@ class TestGlmOcrConstructor:
 
         with patch("glmocr.pipeline.Pipeline") as mock_pipeline:
             mock_pipeline.return_value.start = MagicMock()
-            mock_pipeline.return_value.enable_layout = False
             from glmocr.api import GlmOcr
 
             parser = GlmOcr(mode="selfhosted")
             assert parser._use_maas is False
+            parser.close()
+
+    def test_selfhosted_model_kwarg_is_forwarded_to_ocr_api(self, monkeypatch):
+        """model=... should configure self-hosted OCR request model."""
+        from glmocr.config import _ENV_MAP, ENV_PREFIX
+
+        for suffix in _ENV_MAP:
+            monkeypatch.delenv(f"{ENV_PREFIX}{suffix}", raising=False)
+        monkeypatch.setattr("glmocr.config._find_dotenv", lambda: None)
+
+        with patch("glmocr.pipeline.Pipeline") as mock_pipeline:
+            mock_pipeline.return_value.start = MagicMock()
+            mock_pipeline.return_value.enable_layout = False
+            from glmocr.api import GlmOcr
+
+            parser = GlmOcr(mode="selfhosted", model="glm-ocr")
+            assert parser._use_maas is False
+            assert parser.config_model.pipeline.ocr_api.model == "glm-ocr"
             parser.close()
 
 
@@ -1770,7 +1838,6 @@ class TestOCRClientConnectOllama:
         client = OCRClient(config)
         client.connect()
 
-        # Inspect the payload sent
         call_kwargs = mock_post.call_args
         sent_data = json.loads(call_kwargs.kwargs.get("data") or call_kwargs[1]["data"])
         assert sent_data["model"] == "glm-ocr:latest"
@@ -1809,3 +1876,665 @@ class TestOCRClientConnectOllama:
         assert "messages" in sent_data
         assert sent_data["model"] == "my-model"
         assert sent_data["max_tokens"] == 10
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# MaaS Client ↔ Server Protocol Alignment Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestBuildResponse:
+    """Tests for server._build_response() output format."""
+
+    def test_contains_sdk_native_fields(self):
+        """Response includes SDK native fields (json_result, markdown_result)."""
+        from glmocr.server import _build_response
+
+        resp = _build_response({"key": "val"}, "# Markdown")
+        assert resp["json_result"] == {"key": "val"}
+        assert resp["markdown_result"] == "# Markdown"
+
+    def test_contains_maas_compatible_fields(self):
+        """Response includes MaaS-compatible fields (layout_details, md_results)."""
+        from glmocr.server import _build_response
+
+        layout = [[{"index": 0, "label": "text", "content": "hello"}]]
+        resp = _build_response(layout, "# Hello")
+        assert resp["layout_details"] == layout
+        assert resp["md_results"] == "# Hello"
+
+    def test_sdk_and_maas_fields_are_identical(self):
+        """SDK native and MaaS-compatible fields point to the same values."""
+        from glmocr.server import _build_response
+
+        layout = [[{"index": 0, "label": "title", "content": "Title"}]]
+        md = "# Title"
+        resp = _build_response(layout, md)
+        assert resp["json_result"] is resp["layout_details"]
+        assert resp["markdown_result"] is resp["md_results"]
+
+    def test_contains_metadata_fields(self):
+        """Response contains model, id, created, usage, data_info."""
+        from glmocr.server import _build_response
+
+        resp = _build_response(None, "")
+        assert resp["model"] == "glm-ocr"
+        assert resp["id"].startswith("chatcmpl-")
+        assert isinstance(resp["created"], int)
+        assert resp["usage"] == {}
+        assert resp["data_info"] == {"pages": []}
+
+    def test_id_is_unique(self):
+        """Each call generates a unique id."""
+        from glmocr.server import _build_response
+
+        r1 = _build_response(None, "")
+        r2 = _build_response(None, "")
+        assert r1["id"] != r2["id"]
+
+    def test_none_json_result(self):
+        """Handles None json_result gracefully."""
+        from glmocr.server import _build_response
+
+        resp = _build_response(None, "")
+        assert resp["json_result"] is None
+        assert resp["layout_details"] is None
+
+    def test_empty_string_markdown(self):
+        """Handles empty string markdown_result."""
+        from glmocr.server import _build_response
+
+        resp = _build_response([], "")
+        assert resp["markdown_result"] == ""
+        assert resp["md_results"] == ""
+
+
+class TestServerAcceptsMaaSInputFormat:
+    """Tests for server accepting MaaS client's 'file' field as input."""
+
+    @pytest.fixture()
+    def flask_app(self):
+        """Create a Flask test app with mocked pipeline."""
+        pytest.importorskip(
+            "flask", reason="server tests require 'glmocr[server]' extra"
+        )
+        from glmocr.server import create_app
+        from glmocr.config import load_config
+
+        config = load_config()
+        app = create_app(config)
+        app.config["TESTING"] = True
+        return app
+
+    def _mock_single_result(self, json_result=None, markdown_result=""):
+        """Create a mock pipeline result."""
+        from unittest.mock import MagicMock
+
+        r = MagicMock()
+        r.json_result = json_result or [
+            [{"index": 0, "label": "text", "content": "hi"}]
+        ]
+        r.markdown_result = markdown_result
+        return r
+
+    def test_file_field_accepted_as_input(self, flask_app):
+        """Server accepts 'file' field (MaaS client format) in addition to 'images'."""
+        mock_result = self._mock_single_result(markdown_result="# Test")
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"file": "https://example.com/doc.png"},
+                    content_type="application/json",
+                )
+                assert resp.status_code == 200
+                data = resp.get_json()
+                assert data["markdown_result"] == "# Test"
+
+    def test_images_field_still_works(self, flask_app):
+        """Server still accepts 'images' field (original SDK format)."""
+        mock_result = self._mock_single_result(markdown_result="# Images")
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"images": ["https://example.com/doc.png"]},
+                    content_type="application/json",
+                )
+                assert resp.status_code == 200
+                data = resp.get_json()
+                assert data["markdown_result"] == "# Images"
+
+    def test_file_field_ignored_when_images_present(self, flask_app):
+        """'images' field takes priority over 'file' field."""
+        mock_result = self._mock_single_result(markdown_result="# Priority")
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ) as mock_process:
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={
+                        "images": ["https://example.com/a.png"],
+                        "file": "https://example.com/b.png",
+                    },
+                    content_type="application/json",
+                )
+                assert resp.status_code == 200
+                # Verify pipeline was called with the 'images' URL, not 'file'
+                call_args = mock_process.call_args
+                request_data = call_args[0][0]
+                sent_url = request_data["messages"][0]["content"][0]["image_url"]["url"]
+                assert sent_url == "https://example.com/a.png"
+
+    def test_empty_file_field_falls_back_to_error(self, flask_app):
+        """Empty 'file' field without 'images' returns 400."""
+        with flask_app.test_client() as client:
+            resp = client.post(
+                "/glmocr/parse",
+                json={"file": ""},
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+
+    def test_no_images_no_file_returns_400(self, flask_app):
+        """Missing both 'images' and 'file' returns 400."""
+        with flask_app.test_client() as client:
+            resp = client.post(
+                "/glmocr/parse",
+                json={},
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+
+    def test_file_field_non_string_ignored(self, flask_app):
+        """Non-string 'file' value is ignored (falls through to 400)."""
+        with flask_app.test_client() as client:
+            resp = client.post(
+                "/glmocr/parse",
+                json={"file": 12345},
+                content_type="application/json",
+            )
+            assert resp.status_code == 400
+
+
+class TestServerOutputMaaSCompatible:
+    """Tests for server response containing MaaS-compatible fields."""
+
+    @pytest.fixture()
+    def flask_app(self):
+        """Create a Flask test app with mocked pipeline."""
+        pytest.importorskip(
+            "flask", reason="server tests require 'glmocr[server]' extra"
+        )
+        from glmocr.server import create_app
+        from glmocr.config import load_config
+
+        config = load_config()
+        app = create_app(config)
+        app.config["TESTING"] = True
+        return app
+
+    def _mock_single_result(self, json_result=None, markdown_result="# Test"):
+        from unittest.mock import MagicMock
+
+        r = MagicMock()
+        r.json_result = json_result or [
+            [{"index": 0, "label": "text", "content": "hello"}]
+        ]
+        r.markdown_result = markdown_result
+        return r
+
+    def test_single_result_has_both_field_sets(self, flask_app):
+        """Single result response has both SDK and MaaS fields."""
+        mock_result = self._mock_single_result(markdown_result="# Hello")
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"images": ["https://example.com/doc.png"]},
+                    content_type="application/json",
+                )
+                data = resp.get_json()
+                # SDK fields
+                assert "json_result" in data
+                assert "markdown_result" in data
+                # MaaS-compatible fields
+                assert "layout_details" in data
+                assert "md_results" in data
+                assert "model" in data
+                assert "id" in data
+                assert "created" in data
+                assert "usage" in data
+                assert "data_info" in data
+
+    def test_single_result_values_match(self, flask_app):
+        """SDK and MaaS fields have identical values in single result."""
+        layout = [[{"index": 0, "label": "text", "content": "hello"}]]
+        mock_result = self._mock_single_result(
+            json_result=layout, markdown_result="# MD"
+        )
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"images": ["https://example.com/doc.png"]},
+                    content_type="application/json",
+                )
+                data = resp.get_json()
+                assert data["json_result"] == layout
+                assert data["layout_details"] == layout
+                assert data["markdown_result"] == "# MD"
+                assert data["md_results"] == "# MD"
+
+    def test_empty_result_returns_maas_format(self, flask_app):
+        """Empty pipeline result returns MaaS-compatible format."""
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"images": ["https://example.com/doc.png"]},
+                    content_type="application/json",
+                )
+                data = resp.get_json()
+                assert resp.status_code == 200
+                assert data["json_result"] is None
+                assert data["layout_details"] is None
+                assert data["markdown_result"] == ""
+                assert data["md_results"] == ""
+                assert data["model"] == "glm-ocr"
+
+    def test_multiple_results_merged(self, flask_app):
+        """Multiple results are merged into a single response."""
+        from unittest.mock import MagicMock
+
+        r1 = MagicMock()
+        r1.json_result = [[{"index": 0, "label": "text", "content": "a"}]]
+        r1.markdown_result = "# Page 1"
+        r2 = MagicMock()
+        r2.json_result = [[{"index": 0, "label": "text", "content": "b"}]]
+        r2.markdown_result = "# Page 2"
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([r1, r2]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={
+                        "images": [
+                            "https://example.com/a.png",
+                            "https://example.com/b.png",
+                        ]
+                    },
+                    content_type="application/json",
+                )
+                data = resp.get_json()
+                assert resp.status_code == 200
+                # json_result is a list of two results
+                assert isinstance(data["json_result"], list)
+                assert len(data["json_result"]) == 2
+                assert isinstance(data["layout_details"], list)
+                # Markdown results joined with separator
+                assert "---" in data["markdown_result"]
+                assert "# Page 1" in data["md_results"]
+                assert "# Page 2" in data["md_results"]
+
+    def test_null_markdown_becomes_empty_string(self, flask_app):
+        """None markdown_result is converted to empty string."""
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.json_result = []
+        mock_result.markdown_result = None
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"images": ["https://example.com/doc.png"]},
+                    content_type="application/json",
+                )
+                data = resp.get_json()
+                assert data["markdown_result"] == ""
+                assert data["md_results"] == ""
+
+
+class TestMaaSClientResponseParsing:
+    """Tests for MaaS client parsing server-style responses."""
+
+    def test_parses_layout_details_from_server(self):
+        """_maas_response_to_pipeline_result reads layout_details."""
+        from glmocr.api import GlmOcr
+
+        # This is the format the server returns (via _build_response)
+        server_response = {
+            "id": "chatcmpl-abc",
+            "model": "glm-ocr",
+            "created": 1709234567,
+            "layout_details": [
+                [
+                    {
+                        "index": 0,
+                        "label": "text",
+                        "content": "Hello",
+                        "bbox_2d": [10, 20, 100, 200],
+                    },
+                    {
+                        "index": 1,
+                        "label": "title",
+                        "content": "Title",
+                        "bbox_2d": [10, 5, 100, 18],
+                    },
+                ]
+            ],
+            "md_results": "# Title\nHello",
+            "data_info": {"pages": [{"width": 1000, "height": 1500}]},
+            "usage": {},
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        assert len(result.json_result) == 1  # 1 page
+        assert len(result.json_result[0]) == 2  # 2 regions
+        assert result.json_result[0][0]["label"] == "text"
+        assert result.json_result[0][1]["label"] == "title"
+        # bbox should be normalised to 0-1000 range
+        assert result.json_result[0][0]["bbox_2d"] == [10, 13, 100, 133]
+
+    def test_parses_md_results_from_server(self):
+        """_maas_response_to_pipeline_result reads md_results."""
+        from glmocr.api import GlmOcr
+
+        server_response = {
+            "layout_details": [],
+            "md_results": "# Markdown from server",
+            "data_info": {"pages": []},
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        assert result.markdown_result == "# Markdown from server"
+
+    def test_handles_empty_layout_details(self):
+        """Handles empty layout_details list gracefully."""
+        from glmocr.api import GlmOcr
+
+        server_response = {
+            "layout_details": [],
+            "md_results": "",
+            "data_info": {"pages": []},
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        assert result.json_result == []
+        assert result.markdown_result == ""
+
+    def test_layout_details_not_json_result_is_used(self):
+        """_maas_response_to_pipeline_result reads layout_details, not json_result."""
+        from glmocr.api import GlmOcr
+
+        # Even when json_result differs, layout_details is the source of truth
+        server_response = {
+            "json_result": "wrong-value",
+            "layout_details": [[{"index": 0, "label": "text", "content": "correct"}]],
+            "md_results": "correct md",
+            "markdown_result": "wrong md",
+            "data_info": {"pages": []},
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        # layout_details is used (not json_result)
+        assert result.json_result[0][0]["content"] == "correct"
+        # md_results is used (not markdown_result)
+        assert result.markdown_result == "correct md"
+
+    def test_missing_layout_details_defaults_to_empty(self):
+        """Missing layout_details field defaults to empty list."""
+        from glmocr.api import GlmOcr
+
+        server_response = {
+            "md_results": "some markdown",
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        assert result.json_result == []
+        assert result.markdown_result == "some markdown"
+
+    def test_stores_usage_and_data_info(self):
+        """Usage and data_info are stored on the result object."""
+        from glmocr.api import GlmOcr
+
+        server_response = {
+            "layout_details": [],
+            "md_results": "",
+            "data_info": {"pages": [{"width": 2000, "height": 3000}]},
+            "usage": {"total_tokens": 42, "prompt_tokens": 10, "completion_tokens": 32},
+        }
+
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_response, "test.png")
+
+        assert result._usage == {
+            "total_tokens": 42,
+            "prompt_tokens": 10,
+            "completion_tokens": 32,
+        }
+        assert result._data_info == {"pages": [{"width": 2000, "height": 3000}]}
+
+
+class TestMaaSClientServerProtocolRoundtrip:
+    """End-to-end protocol alignment: MaaS client output → server input,
+    server output → MaaS client parsing."""
+
+    @pytest.fixture()
+    def flask_app(self):
+        """Create a Flask test app with mocked pipeline."""
+        pytest.importorskip(
+            "flask", reason="server tests require 'glmocr[server]' extra"
+        )
+        from glmocr.server import create_app
+        from glmocr.config import load_config
+
+        config = load_config()
+        app = create_app(config)
+        app.config["TESTING"] = True
+        return app
+
+    def test_maas_client_request_server_accepts(self, flask_app):
+        """MaaS client's payload format (file field) is accepted by server."""
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.json_result = [
+            [{"index": 0, "label": "text", "content": "OCR text"}]
+        ]
+        mock_result.markdown_result = "OCR text"
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                # This is exactly what MaaSClient sends via _send_request
+                maas_payload = {
+                    "model": "glm-ocr",
+                    "file": "https://example.com/document.png",
+                }
+                resp = client.post(
+                    "/glmocr/parse",
+                    json=maas_payload,
+                    content_type="application/json",
+                )
+                assert resp.status_code == 200
+
+    def test_server_response_parseable_by_maas_client(self, flask_app):
+        """Server response can be parsed by _maas_response_to_pipeline_result."""
+        from unittest.mock import MagicMock
+        from glmocr.api import GlmOcr
+
+        layout = [
+            [
+                {
+                    "index": 0,
+                    "label": "text",
+                    "content": "Hello World",
+                    "bbox_2d": [0, 0, 500, 500],
+                }
+            ]
+        ]
+        mock_result = MagicMock()
+        mock_result.json_result = layout
+        mock_result.markdown_result = "# Hello World"
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"file": "https://example.com/doc.png"},
+                    content_type="application/json",
+                )
+                server_data = resp.get_json()
+
+        # Now parse it as the MaaS client would
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(
+            server_data, "https://example.com/doc.png"
+        )
+
+        assert result.json_result is not None
+        assert len(result.json_result) == 1
+        assert result.json_result[0][0]["content"] == "Hello World"
+        assert result.markdown_result == "# Hello World"
+
+    def test_full_roundtrip_data_integrity(self, flask_app):
+        """Data integrity is preserved through the full roundtrip."""
+        from unittest.mock import MagicMock
+        from glmocr.api import GlmOcr
+
+        original_layout = [
+            [
+                {
+                    "index": 0,
+                    "label": "title",
+                    "content": "Report",
+                    "bbox_2d": [10, 10, 500, 50],
+                },
+                {
+                    "index": 1,
+                    "label": "text",
+                    "content": "Body text",
+                    "bbox_2d": [10, 60, 500, 200],
+                },
+            ]
+        ]
+        original_md = "# Report\n\nBody text"
+
+        mock_result = MagicMock()
+        mock_result.json_result = original_layout
+        mock_result.markdown_result = original_md
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                resp = client.post(
+                    "/glmocr/parse",
+                    json={"file": "data:image/png;base64,iVBORw0KGgo="},
+                    content_type="application/json",
+                )
+                server_data = resp.get_json()
+
+        # Verify server response has both field sets
+        assert server_data["json_result"] == original_layout
+        assert server_data["layout_details"] == original_layout
+        assert server_data["markdown_result"] == original_md
+        assert server_data["md_results"] == original_md
+        assert server_data["model"] == "glm-ocr"
+        assert server_data["id"].startswith("chatcmpl-")
+        assert isinstance(server_data["created"], int)
+
+        # Parse as MaaS client
+        obj = object.__new__(GlmOcr)
+        result = obj._maas_response_to_pipeline_result(server_data, "test.png")
+
+        # Content labels preserved
+        assert result.json_result[0][0]["label"] == "title"
+        assert result.json_result[0][1]["label"] == "text"
+        assert result.json_result[0][0]["content"] == "Report"
+        assert result.json_result[0][1]["content"] == "Body text"
+        assert result.markdown_result == original_md
+
+    def test_maas_client_payload_with_options_accepted(self, flask_app):
+        """MaaS client payload with extra options is accepted by server."""
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.json_result = []
+        mock_result.markdown_result = ""
+
+        with flask_app.test_client() as client:
+            with patch.object(
+                flask_app.config["pipeline"],
+                "process",
+                return_value=iter([mock_result]),
+            ):
+                # MaaSClient sends this format with optional fields
+                maas_payload = {
+                    "model": "glm-ocr",
+                    "file": "https://example.com/doc.pdf",
+                    "return_crop_images": True,
+                    "need_layout_visualization": True,
+                    "start_page_id": 1,
+                    "end_page_id": 3,
+                    "request_id": "req-123",
+                }
+                resp = client.post(
+                    "/glmocr/parse",
+                    json=maas_payload,
+                    content_type="application/json",
+                )
+                assert resp.status_code == 200

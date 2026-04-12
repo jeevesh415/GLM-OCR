@@ -10,7 +10,7 @@
     <br>
     📖 查看 GLM-OCR <a href="https://arxiv.org/abs/2603.10910" target="_blank">技术报告</a>
     <br>
-    📍 使用 GLM-OCR 的 <a href="https://docs.bigmodel.cn/cn/guide/models/vlm/glm-ocr" target="_blank">API</a>
+  📍 使用 GLM-OCR 的 <a href="https://docs.z.ai/guides/vlm/glm-ocr" target="_blank">API</a>
 </p>
 
 ### 模型介绍
@@ -29,7 +29,7 @@ GLM-OCR 是一款面向复杂文档理解的多模态 OCR 模型，基于 GLM-V 
 
 ### 最新动态
 
-- **[2026.3.12]** GLM-OCR SDK 新增 Agent Skill 模式 — `pip install glmocr` + 配置 API Key，即可通过 CLI 或 Python 直接使用，无需 GPU 和 YAML 配置。详情见：[GLM-OCR Skill](glmocr_skill/SKILL.md)
+- **[2026.3.12]** GLM-OCR SDK 新增 Agent Skill 模式 — `pip install glmocr` + 配置 API Key，即可通过 CLI 或 Python 直接使用，无需 GPU 和 YAML 配置。详情见：[GLM-OCR Skill](skills/glmocr/SKILL.md)
 - **[2026.3.12]** GLM-OCR 技术报告已上线，详情见：[GLM-OCR 技术报告](https://arxiv.org/abs/2603.10910)
 - **[2026.2.12]** 基于 LLaMA-Factory 的微调教程上线，详情见： [GLM-OCR 微调教程](examples/finetune/README_zh.md)
 
@@ -69,7 +69,7 @@ uv pip install -e .
 
 ### 模型服务部署
 
-提供两种方式使用 GLM-OCR：
+提供三种方式使用 GLM-OCR：
 
 #### 方式 1：智谱 MaaS API（推荐快速上手）
 
@@ -112,7 +112,7 @@ pip install "glmocr[selfhosted]"
 安装 vLLM：
 
 ```bash
-docker pull vllm/vllm-openai:nightly
+docker pull vllm/vllm-openai:v0.19.0-ubuntu2404
 ```
 
 或者使用 pip:
@@ -126,15 +126,18 @@ pip install -U "vllm>=0.17.0"
 ```bash
 pip install "transformers>=5.3.0"
 
-vllm serve zai-org/GLM-OCR --allowed-local-media-path / --port 8080 --speculative-config '{"method": "mtp", "num_speculative_tokens": 1}' --served-model-name glm-ocr
+vllm serve zai-org/GLM-OCR  --port 8080 --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' --served-model-name glm-ocr
 ```
+
+> Note
+> 可按机器配置增加 `--max-model-len` 与 `--gpu-memory-utilization` 参数，以更好处理大图/大 PDF。
 
 ##### 使用 SGLang
 
 安装 SGLang：
 
 ```bash
-docker pull lmsysorg/sglang:dev
+docker pull lmsysorg/sglang:v0.5.10
 ```
 
 或者使用 pip:
@@ -151,6 +154,32 @@ pip install "transformers>=5.3.0"
 sglang serve --model zai-org/GLM-OCR --port 8080 --speculative-algorithm NEXTN --speculative-num-steps 3 --speculative-eagle-topk 1 --speculative-num-draft-tokens 4 --served-model-name glm-ocr
 ```
 
+> Note
+> 可按机器配置增加 `--context-len` 与 `--mem-fraction-static` 参数，以更好处理大图/大 PDF。
+
+#### 方式 3: 其他部署选项
+
+针对特定部署场景，请查看详细指南：
+
+- **[Apple Silicon 使用 mlx-vlm](examples/mlx-deploy/README.md)** - 针对 Apple Silicon Mac 优化
+- **[Ollama 部署](examples/ollama-deploy/README.md)** - 使用 Ollama 进行简单的本地部署
+
+#### 方式 4: SDK Server + Client（Client 无需 GPU）
+
+在 GPU 机器上部署 SDK Server，其他机器作为 Client 通过网络调用——Client 端无需 GPU。Client 通过 MaaS 兼容协议连接，将 `api_url` 指向自建 Server 即可。
+
+```yaml
+# Client 端 config.yaml
+pipeline:
+  maas:
+    enabled: true
+    api_url: http://<SERVER_IP>:5002/glmocr/parse
+    api_key: any-string    # 自建 Server 不校验 API key
+    verify_ssl: false
+```
+
+完整指南见：**[自部署 SDK Server + Client](examples/self-host/README.md)**
+
 ##### 更新配置
 
 启动服务后，配置 `config.yaml`：
@@ -163,13 +192,6 @@ pipeline:
     api_host: localhost # 或你的 vLLM/SGLang 服务地址
     api_port: 8080
 ```
-
-#### 方式 3: 其他部署选项
-
-针对特定部署场景，请查看详细指南：
-
-- **[Apple Silicon 使用 mlx-vlm](examples/mlx-deploy/README.md)** - 针对 Apple Silicon Mac 优化
-- **[Ollama 部署](examples/ollama-deploy/README.md)** - 使用 Ollama 进行简单的本地部署
 
 ### SDK 使用指南
 
@@ -190,6 +212,16 @@ glmocr parse examples/source/code.png --config my_config.yaml
 
 # 开启 debug 日志（包含 profiling）
 glmocr parse examples/source/code.png --log-level DEBUG
+
+# 在 CPU 上运行版面检测（将 GPU 留给 OCR 模型）
+glmocr parse examples/source/code.png --layout-device cpu
+
+# 在指定 GPU 上运行版面检测
+glmocr parse examples/source/code.png --layout-device cuda:1
+
+# 通过 --set 覆盖任意配置项（使用 dotted path，可多次使用）
+glmocr parse examples/source/code.png --set pipeline.ocr_api.api_port 8080
+glmocr parse examples/source/ --set pipeline.layout.use_polygon true --set logging.level DEBUG
 ```
 
 #### Python API
@@ -210,6 +242,14 @@ with GlmOcr() as parser:
     result = parser.parse("image.png")
     print(result.json_result)
     result.save()
+
+# 将版面模型放在 CPU（适合将 GPU 留给 OCR）
+with GlmOcr(layout_device="cpu") as parser:
+    result = parser.parse("image.png")
+
+# 将版面模型放在指定 GPU
+with GlmOcr(layout_device="cuda:1") as parser:
+    result = parser.parse("image.png")
 ```
 
 #### Flask 服务
@@ -238,85 +278,6 @@ curl -X POST http://localhost:5002/glmocr/parse \
 - `images` 可以是 string 或 list。
 - list 会被当作同一文档的多页处理。
 - 如果要处理多个独立文档，请多次调用接口（一次请求一个文档）。
-
-### 配置
-
-完整配置见 `glmocr/config.yaml`：
-
-```yaml
-# Server (for glmocr.server)
-server:
-  host: "0.0.0.0"
-  port: 5002
-  debug: false
-
-# Logging
-logging:
-  level: INFO # DEBUG enables profiling
-
-# Pipeline
-pipeline:
-  # OCR API connection
-  ocr_api:
-    api_host: localhost
-    api_port: 8080
-    api_key: null # or set API_KEY env var
-    connect_timeout: 300
-    request_timeout: 300
-
-  # Page loader settings
-  page_loader:
-    max_tokens: 16384
-    temperature: 0.01
-    image_format: JPEG
-    min_pixels: 12544
-    max_pixels: 71372800
-
-  # Result formatting
-  result_formatter:
-    output_format: both # json, markdown, or both
-
-  # Layout detection (optional)
-  enable_layout: false
-```
-
-更多选项请参考 [config.yaml](glmocr/config.yaml)。
-
-### 输出格式
-
-这里给出两种输出格式示例：
-
-- JSON
-
-```json
-[[{ "index": 0, "label": "text", "content": "...", "bbox_2d": null }]]
-```
-
-- Markdown
-
-```markdown
-# 文档标题
-
-正文...
-
-| Table | Content |
-| ----- | ------- |
-| ...   | ...     |
-```
-
-### 完整流程示例
-
-你可以运行示例代码：
-
-```bash
-python examples/example.py
-```
-
-输出结构（每个输入对应一个目录）：
-
-- `result.json`：结构化 OCR 结果
-- `result.md`：Markdown 结果
-- `imgs/`：裁剪后的图片区域（启用 layout 模式时）
 
 ### 模块化架构
 
@@ -347,6 +308,16 @@ class MyPipeline:
     # 实现你自己的处理逻辑
     pass
 ```
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=zai-org%2FGLM-OCR&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=zai-org/GLM-OCR&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## 致谢
 

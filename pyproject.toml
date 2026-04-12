@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glmocr"
-version = "0.1.4"
+version = "0.1.5"
 description = "GLM OCR - Optical Character Recognition powered by GLM"
 authors = [
   {name = "zai-org", email = "wenmeng.yu@aminer.cn"}
@@ -32,11 +32,13 @@ dependencies = [
   "PyYAML>=6.0.0",
   "portalocker>=3.2.0",
   "python-dotenv>=1.2.0",
-  "pypdfium2>=5.6.0",
+  "tqdm>=4.62.0",
+  "pymupdf>=1.24.0",
 ]
 
 [project.optional-dependencies]
 layout = [
+  "opencv-python-headless>=4.10.0",
   "torch>=2.10.0",
   "torchvision>=0.25.0",
   "transformers>=5.3.0",
@@ -49,6 +51,7 @@ server = [
 ]
 
 selfhosted = [
+  "opencv-python-headless>=4.10.0",
   "torch>=2.10.0",
   "torchvision>=0.25.0",
   "transformers>=5.3.0",
@@ -58,6 +61,7 @@ selfhosted = [
 ]
 
 all = [
+  "opencv-python-headless>=4.10.0",
   "torch>=2.10.0",
   "torchvision>=0.25.0",
   "transformers>=5.3.0",
@@ -84,9 +88,13 @@ Documentation = "https://github.com/zai-org/glm-ocr#readme"
 Issues = "https://github.com/zai-org/glm-ocr/issues"
 
 [tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["glmocr*"]
+
+[tool.setuptools.package-data]
+glmocr = ["config.yaml"]
 
 [tool.black]
 line-length = 100
